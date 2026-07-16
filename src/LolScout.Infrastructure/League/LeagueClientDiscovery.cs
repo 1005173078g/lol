@@ -1,81 +1,59 @@
-using System.Diagnostics;
-using System.Text;
+using System.Management;
+using System.Runtime.Versioning;
 
 namespace LolScout.Infrastructure.League;
 
-public sealed record LeagueClientProcess(string Name, string CommandLine);
-public sealed record LeagueClientConnection(int Port, string AuthenticationToken);
-
-public interface ILeagueClientProcessSource
+public sealed class LeagueClientProcess
 {
-    IReadOnlyList<LeagueClientProcess> GetProcesses();
+    public LeagueClientProcess(string name, string commandLine) { Name = name; CommandLine = commandLine; }
+    public string Name { get; }
+    internal string CommandLine { get; }
+    public override string ToString() => $"LeagueClientProcess {{ Name = {Name}, CommandLine = [REDACTED] }}";
 }
 
-public sealed class WindowsLeagueClientProcessSource : ILeagueClientProcessSource
+public interface IProcessCommandLineSource { IReadOnlyList<LeagueClientProcess> GetProcesses(); }
+
+public sealed class WindowsProcessCommandLineSource : IProcessCommandLineSource
 {
+    [SupportedOSPlatform("windows")]
     public IReadOnlyList<LeagueClientProcess> GetProcesses()
     {
         if (!OperatingSystem.IsWindows()) return [];
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = "powershell.exe",
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true,
-            WindowStyle = ProcessWindowStyle.Hidden
-        };
-        startInfo.ArgumentList.Add("-NoProfile");
-        startInfo.ArgumentList.Add("-NonInteractive");
-        startInfo.ArgumentList.Add("-Command");
-        startInfo.ArgumentList.Add("Get-CimInstance Win32_Process -Filter \"Name='LeagueClientUx.exe'\" | ForEach-Object { [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($_.Name + [char]9 + $_.CommandLine)) }");
-        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Could not enumerate LeagueClientUx.");
-        var lines = process.StandardOutput.ReadToEnd();
-        process.WaitForExit();
-        if (process.ExitCode != 0) throw new InvalidOperationException("Could not enumerate LeagueClientUx command line.");
-        return lines.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
-            .Select(ParseLine).Where(p => p is not null).Cast<LeagueClientProcess>().ToArray();
-    }
-
-    private static LeagueClientProcess? ParseLine(string line)
-    {
-        try
-        {
-            var decoded = Encoding.UTF8.GetString(Convert.FromBase64String(line));
-            var separator = decoded.IndexOf('\t');
-            return separator <= 0 ? null : new(decoded[..separator], decoded[(separator + 1)..]);
-        }
-        catch (FormatException) { return null; }
+        using var searcher = new ManagementObjectSearcher("SELECT Name, CommandLine FROM Win32_Process WHERE Name = 'LeagueClientUx.exe'");
+        using var results = searcher.Get();
+        return results.Cast<ManagementObject>().Select(p => new LeagueClientProcess((string?)p["Name"] ?? "", (string?)p["CommandLine"] ?? "")).ToArray();
     }
 }
 
-public sealed class LeagueClientDiscovery(ILeagueClientProcessSource processSource)
+public sealed class LeagueClientConnection : IDisposable
+{
+    private char[] token;
+    internal LeagueClientConnection(int port, char[] token) { Port = port; this.token = token; }
+    public int Port { get; }
+    internal ReadOnlyMemory<char> Token => token;
+    public void Dispose() { Array.Clear(token); token = []; }
+    public override string ToString() => $"LeagueClientConnection {{ Port = {Port}, AuthenticationToken = [REDACTED] }}";
+}
+
+public sealed class LeagueClientDiscovery(IProcessCommandLineSource processSource)
 {
     public LeagueClientConnection Discover()
     {
-        var process = processSource.GetProcesses().FirstOrDefault(p =>
-            string.Equals(Path.GetFileNameWithoutExtension(p.Name), "LeagueClientUx", StringComparison.OrdinalIgnoreCase));
-        if (process is null) throw new InvalidOperationException("LeagueClientUx is not running.");
-
-        var port = ReadArgument(process.CommandLine, "--app-port");
-        var token = ReadArgument(process.CommandLine, "--remoting-auth-token");
-        if (!int.TryParse(port, out var parsedPort) || parsedPort is < 1 or > 65535 || string.IsNullOrWhiteSpace(token))
+        var matches = processSource.GetProcesses().Where(p => string.Equals(Path.GetFileNameWithoutExtension(p.Name), "LeagueClientUx", StringComparison.OrdinalIgnoreCase)).ToArray();
+        if (matches.Length != 1) throw new InvalidOperationException(matches.Length == 0 ? "LeagueClientUx is not running." : "Multiple LeagueClientUx processes are ambiguous.");
+        var portText = ReadArgument(matches[0].CommandLine, "--app-port");
+        var tokenText = ReadArgument(matches[0].CommandLine, "--remoting-auth-token");
+        if (!int.TryParse(portText, out var port) || port is < 1 or > 65535 || string.IsNullOrEmpty(tokenText))
             throw new ProtocolChangedException("LeagueClientUx did not declare a valid local connection.");
-        return new(parsedPort, token);
+        return new(port, tokenText.ToCharArray());
     }
 
     private static string? ReadArgument(string commandLine, string name)
     {
-        var marker = name + "=";
-        var start = commandLine.IndexOf(marker, StringComparison.Ordinal);
-        if (start < 0) return null;
-        start += marker.Length;
-        if (start < commandLine.Length && commandLine[start] == '"')
-        {
-            var endQuote = commandLine.IndexOf('"', ++start);
-            return endQuote < 0 ? null : commandLine[start..endQuote];
-        }
-        var end = commandLine.IndexOf(' ', start);
-        return commandLine[start..(end < 0 ? commandLine.Length : end)];
+        var marker = name + "="; var start = commandLine.IndexOf(marker, StringComparison.Ordinal);
+        if (start < 0) return null; start += marker.Length;
+        var quoted = start < commandLine.Length && commandLine[start] == '"'; if (quoted) start++;
+        var end = quoted ? commandLine.IndexOf('"', start) : commandLine.IndexOf(' ', start);
+        return quoted && end < 0 ? null : commandLine[start..(end < 0 ? commandLine.Length : end)];
     }
 }

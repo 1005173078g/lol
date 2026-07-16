@@ -1,6 +1,6 @@
-using System.Net;
-using System.Security.Cryptography.X509Certificates;
 using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
+using System.Text.Json.Nodes;
 using FluentAssertions;
 using LolScout.Core.Domain;
 using LolScout.Infrastructure.League;
@@ -16,102 +16,120 @@ public sealed class LeagueSessionTests
     [InlineData("GameStart", GamePhase.Loading)]
     [InlineData("InProgress", GamePhase.InGame)]
     [InlineData("EndOfGame", GamePhase.Ended)]
-    public async Task Maps_lcu_phase(string wirePhase, GamePhase expected)
-    {
-        var transport = new StubTransport($"\"{wirePhase}\"");
-        var session = Session(transport);
+    public async Task Maps_lcu_phase(string wire, GamePhase expected) =>
+        (await Session(new StubTransport($"\"{wire}\"")).GetPhaseAsync(default)).Should().Be(expected);
 
-        (await session.GetPhaseAsync(default)).Should().Be(expected);
+    [Fact]
+    public async Task Champion_select_participants_wait_for_live_api()
+    {
+        var transport = new StubTransport("unused");
+        var act = () => Session(transport, GamePhase.ChampionSelect).GetParticipantsAsync(default);
+        await act.Should().ThrowAsync<ParticipantsUnavailableException>();
+        transport.Requests.Should().BeEmpty();
     }
 
     [Fact]
-    public async Task Returns_five_enemies_with_identity_team_and_champion()
+    public async Task Official_playerlist_returns_exactly_five_enemies()
     {
-        var json = await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "Fixtures", "league-participants.sanitized.json"));
-        var session = Session(new StubTransport(json), localTeamId: 100, phase: GamePhase.InGame);
-
-        var enemies = await session.GetParticipantsAsync(default);
-
+        var json = await Fixture();
+        var transport = new StubTransport("\"Ally1#TEST\"", json);
+        var enemies = await Session(transport, GamePhase.InGame).GetParticipantsAsync(default);
         enemies.Should().HaveCount(5).And.OnlyContain(x => x.TeamId == 200);
-        enemies[0].Player.Should().Be(new PlayerIdentity("Enemy1", "TEST", "CN1"));
-        enemies[0].ChampionId.Should().Be(103);
-        enemies[0].ChampionName.Should().Be("Ahri");
+        enemies[0].Should().Be(new LiveParticipant(new PlayerIdentity("Enemy1", "TEST", "CN1"), 200, 103, "Ahri"));
     }
 
-    [Fact]
-    public async Task Hidden_enemy_identity_is_unavailable_instead_of_guessed()
+    [Theory]
+    [InlineData("UNKNOWN", "Enemy1", "TEST")]
+    [InlineData("ORDER", "", "TEST")]
+    public async Task Unknown_team_or_hidden_identity_is_rejected(string team, string gameName, string tag)
     {
-        const string json = "[{\"riotIdGameName\":\"\",\"riotIdTagLine\":\"\",\"team\":200,\"championId\":103,\"championName\":\"Ahri\"}]";
-        var session = Session(new StubTransport(json), localTeamId: 100, phase: GamePhase.ChampionSelect);
-
-        var act = () => session.GetParticipantsAsync(default);
-
+        var json = (await Fixture()).Replace("\"team\":\"CHAOS\",\"championName\":\"Ahri\",\"riotIdGameName\":\"Enemy1\",\"riotIdTagLine\":\"TEST\"",
+            $"\"team\":\"{team}\",\"championName\":\"Ahri\",\"riotIdGameName\":\"{gameName}\",\"riotIdTagLine\":\"{tag}\"");
+        var act = () => Session(new StubTransport("\"Ally1#TEST\"", json), GamePhase.InGame).GetParticipantsAsync(default);
         await act.Should().ThrowAsync<ParticipantsUnavailableException>();
     }
 
     [Fact]
-    public void Discovery_reads_only_self_declared_port_and_token()
+    public async Task Non_ten_player_shape_is_unavailable()
     {
-        var source = new StubProcesses("LeagueClientUx.exe", "LeagueClientUx.exe --app-port=54321 --remoting-auth-token=fictional");
-
-        var connection = new LeagueClientDiscovery(source).Discover();
-
-        connection.Port.Should().Be(54321);
-        connection.AuthenticationToken.Should().Be("fictional");
+        var array = JsonNode.Parse(await Fixture())!.AsArray();
+        array.RemoveAt(array.Count - 1);
+        var json = array.ToJsonString();
+        var act = () => Session(new StubTransport("\"Ally1#TEST\"", json), GamePhase.InGame).GetParticipantsAsync(default);
+        await act.Should().ThrowAsync<ParticipantsUnavailableException>();
     }
 
-    [Fact]
-    public async Task Transport_is_restricted_to_ipv4_loopback()
+    [Theory]
+    [InlineData("extra")]
+    [InlineData("team")]
+    public async Task Unknown_or_missing_required_fields_are_protocol_change(string field)
     {
-        var transport = new StubTransport("\"None\"");
-        await Session(transport).GetPhaseAsync(default);
-        transport.LastUri!.Host.Should().Be("127.0.0.1");
-    }
-
-    [Fact]
-    public async Task Loading_reads_official_live_client_endpoint_without_lcu_token()
-    {
-        var transport = new StubTransport("[]");
-        await Session(transport, phase: GamePhase.Loading).GetParticipantsAsync(default);
-
-        transport.LastUri.Should().Be(new Uri("https://127.0.0.1:2999/liveclientdata/playerlist"));
-        transport.LastToken.Should().BeNull();
-    }
-
-    [Fact]
-    public async Task Unknown_phase_is_rejected_as_protocol_change()
-    {
-        var act = () => Session(new StubTransport("\"SurprisePhase\"")).GetPhaseAsync(default);
+        var json = await Fixture();
+        json = field == "extra" ? json.Replace("{\"team\":", "{\"extra\":1,\"team\":", StringComparison.Ordinal) : json.Replace("\"team\":\"ORDER\"", "\"team\":null", StringComparison.Ordinal);
+        var act = () => Session(new StubTransport("\"Ally1#TEST\"", json), GamePhase.InGame).GetParticipantsAsync(default);
         await act.Should().ThrowAsync<ProtocolChangedException>();
     }
 
     [Fact]
-    public void Certificate_with_wrong_pin_is_rejected()
+    public async Task Duplicate_identity_is_protocol_change()
+    {
+        var json = (await Fixture()).Replace("Enemy2", "Enemy1", StringComparison.Ordinal);
+        var act = () => Session(new StubTransport("\"Ally1#TEST\"", json), GamePhase.InGame).GetParticipantsAsync(default);
+        await act.Should().ThrowAsync<ProtocolChangedException>();
+    }
+
+    [Fact]
+    public void Ambiguous_client_processes_are_rejected_without_leaking_token()
+    {
+        var discovery = new LeagueClientDiscovery(new StubProcesses(
+            new LeagueClientProcess("LeagueClientUx.exe", "LeagueClientUx.exe --app-port=1 --remoting-auth-token=secret-one"),
+            new LeagueClientProcess("LeagueClientUx.exe", "LeagueClientUx.exe --app-port=2 --remoting-auth-token=secret-two")));
+        var act = discovery.Discover;
+        act.Should().Throw<InvalidOperationException>().Which.Message.Should().NotContain("secret");
+    }
+
+    [Fact]
+    public void Credentials_do_not_expose_token_via_ToString()
+    {
+        var process = new LeagueClientProcess("LeagueClientUx.exe", "LeagueClientUx.exe --app-port=54321 --remoting-auth-token=fictional-secret");
+        process.ToString().Should().NotContain("fictional-secret");
+        using var connection = new LeagueClientDiscovery(new StubProcesses(process)).Discover();
+        connection.ToString().Should().NotContain("fictional-secret");
+    }
+
+    [Fact]
+    public async Task Certificate_failure_maps_to_stable_public_exception()
+    {
+        var transport = new LeagueHttpTransport(new ThrowingHandler(new HttpRequestException("TLS", new CertificatePinRejectedException())));
+        var act = () => transport.GetStringAsync(new Uri("https://127.0.0.1:2999/liveclientdata/playerlist"), null, default);
+        await act.Should().ThrowAsync<CertificatePinMismatchException>();
+    }
+
+    [Fact]
+    public void Wrong_certificate_returns_false_without_throwing()
     {
         using var key = RSA.Create(2048);
         var request = new CertificateRequest("CN=rclient", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
-        using var certificate = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
-        var act = () => LeagueHttpTransport.ValidateCertificate(null!, certificate, null, default);
-        act.Should().Throw<CertificatePinMismatchException>();
+        using var cert = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
+        var act = () => LeagueHttpTransport.IsPinnedCertificate(cert, DateTimeOffset.UtcNow);
+        act.Should().NotThrow();
+        LeagueHttpTransport.IsPinnedCertificate(cert, DateTimeOffset.UtcNow).Should().BeFalse();
     }
 
-    private static LeagueSession Session(ILeagueHttpTransport transport, int localTeamId = 100, GamePhase phase = GamePhase.ChampionSelect) =>
-        new(new LeagueClientDiscovery(new StubProcesses("LeagueClientUx.exe", "LeagueClientUx.exe --app-port=54321 --remoting-auth-token=fictional")), transport, "CN1", () => phase, () => localTeamId);
+    private static LeagueSession Session(ILeagueHttpTransport transport, GamePhase phase = GamePhase.ChampionSelect) =>
+        new(new LeagueClientDiscovery(new StubProcesses(new LeagueClientProcess("LeagueClientUx.exe", "LeagueClientUx.exe --app-port=54321 --remoting-auth-token=fictional"))), transport, "CN1", () => phase,
+            new DictionaryChampionCatalog(new Dictionary<string, int> { ["Annie"] = 1, ["Garen"] = 86, ["Ahri"] = 103, ["Aatrox"] = 266, ["Ashe"] = 22, ["LeeSin"] = 64 }));
 
-    private sealed class StubProcesses(string name, string commandLine) : ILeagueClientProcessSource
+    private static Task<string> Fixture() => File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "Fixtures", "league-participants.sanitized.json"));
+    private sealed class StubProcesses(params LeagueClientProcess[] values) : IProcessCommandLineSource { public IReadOnlyList<LeagueClientProcess> GetProcesses() => values; }
+    private sealed class StubTransport(params string[] responses) : ILeagueHttpTransport
     {
-        public IReadOnlyList<LeagueClientProcess> GetProcesses() => [new(name, commandLine)];
+        private readonly Queue<string> responses = new(responses);
+        public List<Uri> Requests { get; } = [];
+        public Task<string> GetStringAsync(Uri uri, ReadOnlyMemory<char> token, CancellationToken cancellationToken) { Requests.Add(uri); return Task.FromResult(responses.Dequeue()); }
     }
-
-    private sealed class StubTransport(string json) : ILeagueHttpTransport
+    private sealed class ThrowingHandler(Exception exception) : HttpMessageHandler
     {
-        public Uri? LastUri { get; private set; }
-        public string? LastToken { get; private set; }
-        public Task<string> GetStringAsync(Uri uri, string? bearerToken, CancellationToken cancellationToken)
-        {
-            LastUri = uri;
-            LastToken = bearerToken;
-            return Task.FromResult(json);
-        }
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) => Task.FromException<HttpResponseMessage>(exception);
     }
 }

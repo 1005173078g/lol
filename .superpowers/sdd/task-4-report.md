@@ -1,29 +1,42 @@
-# Task 4 实现报告
+# Task 4 implementation report
 
-## 状态
+## Status
 
-已完成 League 阶段与参赛者只读适配器、可替换的进程枚举/HTTP 边界、严格 loopback 限制和 rclient 证书固定验证。未实现 Task 5 战绩功能。
+Task 4 review fixes are implemented. Task 5 was not changed. The report's commit is the SHA returned by `git rev-parse HEAD` after commit.
 
-提交 SHA：本报告所在提交（以 `git rev-parse HEAD` 为准）。
+## Contract and runtime evidence
 
-## 实现摘要
+- Primary participant contract: Riot's official Game Client / Live Client Data API documentation at <https://developer.riotgames.com/docs/lol>.
+- Official endpoints used: `/liveclientdata/activeplayername` and `/liveclientdata/playerlist` on `https://127.0.0.1:2999`.
+- Official player fields used: `team` (`ORDER` or `CHAOS`), `championName`, `riotIdGameName`, and `riotIdTagLine`. Champion ID is resolved through a separate injected champion catalog because the official playerlist contract does not contain it.
+- CN runtime remains unverified. No real-match API success is claimed. The fixture is hand-authored from the official contract and contains fictional IDs only.
+- Champion-select participant data is deliberately unavailable: no unsupported/unverified LCU participant response shape is encoded. The adapter waits for the official Live Client API.
 
-- 仅从 `LeagueClientUx.exe` 自声明命令行读取 `--app-port` 和 `--remoting-auth-token`；默认 Windows 枚举器不落盘输出。
-- LCU 请求仅访问 `https://127.0.0.1:<declared-port>`；载入/游戏阶段访问官方 `https://127.0.0.1:2999/liveclientdata/playerlist`。
-- 认证 token 仅作为局部连接值和请求头存在于内存，不写日志、不写 fixture。
-- TLS 同时验证固定 SHA-256、精确 `CN=rclient`、Issuer 包含 `Riot Games` 和有效期；不使用 accept-any 验证器。
-- 敌方信息隐藏时抛 `ParticipantsUnavailableException`，未知阶段/结构抛 `ProtocolChangedException`，不猜测玩家或阵营。
-- 测试 fixture 只含 `Enemy1#TEST` 等虚构身份。
+## Security and fail-closed behavior
 
-## 验证命令与结果
+- Process command lines are read in-process through `System.Management` (`Win32_Process`) behind `IProcessCommandLineSource`; no PowerShell process or stdout is used.
+- Discovery accepts exactly one `LeagueClientUx` process. Zero or multiple matches fail without including command lines or tokens in exceptions.
+- The token is copied into a disposable `char[]` connection, never cached by `LeagueSession`, cleared after each LCU call, and redacted by `ToString()`.
+- Requests are restricted to HTTPS IPv4 loopback.
+- TLS checks SHA-256 pin format and value, parsed subject simple name `rclient`, parsed issuer name containing `Riot Games`, and validity dates. The certificate callback returns false rather than throwing; transport maps the resulting HTTP failure to stable `CertificatePinMismatchException`.
+- Player mapping requires exactly ten unique players, a uniquely identified active player, exactly five players per explicit `ORDER`/`CHAOS` side, and exactly five enemies. Hidden identities and unavailable team structure fail as `ParticipantsUnavailableException`.
+- JSON uses `UnmappedMemberHandling.Disallow`. Unknown properties, missing required fields, duplicate identities, and unknown champions fail closed.
 
-- `dotnet test --filter LeagueSessionTests`：通过 12，失败 0。
-- `dotnet test`：Core 通过 11，Infrastructure 通过 20，合计通过 31，失败 0。
-- `rg -n "DangerousAcceptAnyServerCertificateValidator|ServerCertificateCustomValidationCallback\\s*=\\s*\\(.*=>\\s*true|https?://(?!127\\.0\\.0\\.1)" ... -P`：无匹配。
-- `git diff --check`：通过；仅 Git 提示现有行尾将在未来转换为 CRLF。
+## Fresh verification
 
-## 关注事项
+- `dotnet test -c Release --no-restore --filter LeagueSessionTests`
+  - PASS: 17, FAIL: 0, SKIP: 0.
+- `dotnet test -c Release --no-restore`
+  - Core PASS: 11, FAIL: 0.
+  - Infrastructure PASS: 25, FAIL: 0.
+  - Total PASS: 36, FAIL: 0.
+- `$unsafe = rg -n "powershell|DangerousAcceptAnyServerCertificateValidator|ServerCertificateCustomValidationCallback\\s*=.*=>\\s*true|https?://(?!127\\.0\\.0\\.1)" src/LolScout.Infrastructure/League tests/LolScout.Infrastructure.Tests/LeagueSessionTests.cs -i -P; if ($LASTEXITCODE -eq 0) { $unsafe; exit 1 } elseif ($LASTEXITCODE -ne 1) { exit $LASTEXITCODE }`
+  - PASS with no matches: no PowerShell, accept-any callback, or non-loopback URL.
+- `git diff --check`
+  - PASS; only line-ending conversion notices were emitted.
 
-- `docs/protocol-capabilities.md` 仍记录本机字段形状“未验证”。本实现依据本任务已批准的协议决定和虚构脱敏 fixture 完成，**不声称本次对真实对局 API 调用成功**。实机可用时仍应重新执行只读探测并核对 DTO 字段。
-- 当前仓库没有最终 GUI/可执行应用项目，因此管理员权限 manifest 应在应用宿主任务中配置；本任务提供的 Windows 进程枚举按“宿主已以管理员运行”的前提执行。
-- 证书轮换会触发 `CertificatePinMismatchException`，必须人工核验新证书身份后再更新固定值，不能降级为 accept-any。
+## Remaining attention
+
+- Re-run a read-only, shape-only runtime probe during a future CN match before claiming runtime compatibility. Never persist raw responses or credentials.
+- Certificate rotation must remain a manual trust update after independent certificate identity verification; do not weaken validation.
+- The final executable host still needs the already-approved require-administrator manifest when that host project is added.
