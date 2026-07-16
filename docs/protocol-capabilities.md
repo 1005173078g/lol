@@ -1,11 +1,11 @@
 # Local protocol capability matrix
 
-Probe inspection time: 2026-07-16 12:28 +08:00. Evidence came from a read-only process-name listing and an installation configuration-category/file-name listing. No process command lines, configuration contents, paths, endpoints, or values were recorded. The probe keeps credentials and raw responses in memory, uses normal TLS certificate validation, and writes only redacted JSON shapes.
+Latest probe inspection time: 2026-07-16 13:04 +08:00, while the user reported champion select or loading. Evidence came from a read-only process-name listing, client-declared lockfile presence/shape checks, and an installation configuration-category/file-name listing. No process command lines, configuration contents, paths, endpoints, ports, credentials, or values were recorded. The probe keeps credentials and raw responses in memory, uses normal TLS certificate validation, and writes only redacted JSON shapes.
 
 | Capability | Status | Source process | Observed phase | Redacted field paths / evidence |
 | --- | --- | --- | --- | --- |
-| League game phase | unavailable / unverified | Expected `LeagueClientUx` or `LeagueClient`; neither appeared in the process-name listing | League client not running | No response shape was available. |
-| League participants, team mapping, player identifiers, and champions | unavailable / unverified | Expected `LeagueClientUx` or `LeagueClient`; neither appeared in the process-name listing | League client not running | No response shape was available; enemy identity visibility must not be assumed. |
+| League game phase | unavailable / unverified | `LeagueClientUx` and `LeagueClient` appeared in the process-name listing; the readable client location exposed only an empty/stale lockfile and no usable connection declaration | User reported champion select or loading; API phase could not be verified | No response shape was available. |
+| League participants, team mapping, player identifiers, and champions | unavailable / unverified | Same process and empty/stale lockfile evidence as phase probing | User reported champion select or loading; API participant visibility could not be verified | No response shape was available; enemy identity visibility must not be assumed. |
 | WeGame current-player recent ranked history | unavailable / unverified | `wegame` and `wegame_env` appeared in the process-name listing; installation-level INI/XML and configuration-directory names were inspected without reading or recording values | WeGame running; no configuration-declared HTTPS endpoint was verified | Ranked list, result, MVP, position, champion, and KDA field paths remain unverified. |
 
 ## Safety boundaries
