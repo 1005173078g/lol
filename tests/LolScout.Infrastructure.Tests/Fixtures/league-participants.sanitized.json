@@ -1,0 +1,8 @@
+[
+  {"riotIdGameName":"Ally1","riotIdTagLine":"TEST","team":100,"championId":1,"championName":"Annie"},
+  {"riotIdGameName":"Enemy1","riotIdTagLine":"TEST","team":200,"championId":103,"championName":"Ahri"},
+  {"riotIdGameName":"Enemy2","riotIdTagLine":"TEST","team":200,"championId":266,"championName":"Aatrox"},
+  {"riotIdGameName":"Enemy3","riotIdTagLine":"TEST","team":200,"championId":22,"championName":"Ashe"},
+  {"riotIdGameName":"Enemy4","riotIdTagLine":"TEST","team":200,"championId":86,"championName":"Garen"},
+  {"riotIdGameName":"Enemy5","riotIdTagLine":"TEST","team":200,"championId":64,"championName":"LeeSin"}
+]
