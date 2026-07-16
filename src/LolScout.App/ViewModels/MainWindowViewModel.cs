@@ -8,6 +8,7 @@ namespace LolScout.App.ViewModels;
 
 public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDisposable
 {
+    private static readonly TimeSpan WatchRetryBackoff = TimeSpan.FromSeconds(1); // Fixed bounded backoff; supervision retries indefinitely until cancellation.
     private readonly IScoutStateSource? coordinator;
     private readonly IClipboardService clipboard;
     private readonly IUiDispatcher dispatcher;
@@ -51,6 +52,21 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
             watchTask = WatchAsync(lifetime.Token);
     }
 
+    public void Cancel() => lifetime.Cancel();
+
+    public void StopFallback()
+    {
+        if (Interlocked.Exchange(ref disposed, 1) != 0) return;
+        lifetime.Cancel();
+        lifetime.Dispose();
+    }
+
+    public Task ReportLifecycleErrorAsync(Exception exception) => dispatcher.InvokeAsync(() =>
+    {
+        LastCommandError = exception.Message;
+        OperationStatus = "退出清理遇到错误";
+    });
+
     public Task ApplyStateAsync(ScoutState state) => dispatcher.InvokeAsync(() => ApplyState(state));
 
     public bool ConsumeShowWindowRequest()
@@ -78,7 +94,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
                     LastCommandError = exception.Message;
                     OperationStatus = "监控暂时中断，正在重试";
                 }).ConfigureAwait(false);
-                try { await retryDelay(TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false); }
+                try { await retryDelay(WatchRetryBackoff, cancellationToken).ConfigureAwait(false); }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { break; }
             }
         }
@@ -152,7 +168,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref disposed, 1) != 0) return;
-        lifetime.Cancel();
+        Cancel();
         if (watchTask is not null) await watchTask.ConfigureAwait(false);
         lifetime.Dispose();
     }

@@ -21,10 +21,22 @@ public partial class App : System.Windows.Application
         tray = new TrayIconService(
             () => ShowMainWindow(window),
             () => viewModel.RefreshCommand.Execute(null),
-            ExitApplicationAsync);
+            ExitApplicationAsync,
+            viewModel.ReportLifecycleErrorAsync);
         shutdownCoordinator = new ShutdownCoordinator(
             () => viewModel.DisposeAsync(),
-            [tray, composition]);
+            viewModel.StopFallback,
+            [tray, composition],
+            () => Dispatcher.InvokeAsync(() =>
+            {
+                window.CloseForExit();
+                Shutdown();
+            }).Task,
+            async error =>
+            {
+                System.Diagnostics.Trace.TraceError(error.ToString());
+                if (!Dispatcher.HasShutdownStarted) await viewModel.ReportLifecycleErrorAsync(error);
+            });
         viewModel.Start();
     }
 
@@ -38,13 +50,11 @@ public partial class App : System.Windows.Application
     private async Task ExitApplicationAsync()
     {
         if (shutdownCoordinator is not null) await shutdownCoordinator.StopAsync();
-        (MainWindow as MainWindow)?.CloseForExit();
-        Shutdown();
     }
 
     protected override void OnExit(ExitEventArgs e)
     {
-        shutdownCoordinator?.StopAsync().GetAwaiter().GetResult();
+        shutdownCoordinator?.StopFallback();
         base.OnExit(e);
     }
 }

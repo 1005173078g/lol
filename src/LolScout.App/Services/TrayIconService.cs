@@ -30,9 +30,12 @@ public sealed class TrayIconService : IDisposable
     private bool disposed;
 
     public TrayIconService(Action show, Action refresh, Func<Task> exit)
-        : this(show, refresh, exit, new WinFormsTrayPlatformFactory()) { }
+        : this(show, refresh, exit, new WinFormsTrayPlatformFactory(), _ => Task.CompletedTask) { }
 
-    public TrayIconService(Action show, Action refresh, Func<Task> exit, ITrayPlatformFactory factory)
+    public TrayIconService(Action show, Action refresh, Func<Task> exit, Func<Exception, Task> reportError)
+        : this(show, refresh, exit, new WinFormsTrayPlatformFactory(), reportError) { }
+
+    public TrayIconService(Action show, Action refresh, Func<Task> exit, ITrayPlatformFactory factory, Func<Exception, Task>? reportError = null)
     {
         ArgumentNullException.ThrowIfNull(show);
         ArgumentNullException.ThrowIfNull(refresh);
@@ -46,7 +49,15 @@ public sealed class TrayIconService : IDisposable
             createdMenu.Add("显示", show);
             createdMenu.Add("重新查询", refresh);
             createdMenu.AddSeparator();
-            createdMenu.AddAsync("退出", exit);
+            createdMenu.AddAsync("退出", async () =>
+            {
+                try { await exit(); }
+                catch (Exception exception)
+                {
+                    if (reportError is not null)
+                        try { await reportError(exception); } catch { }
+                }
+            });
             createdIcon = factory.CreateIcon();
             createdIcon.Configure(createdMenu.NativeMenu, show);
             menu = createdMenu;
@@ -64,9 +75,11 @@ public sealed class TrayIconService : IDisposable
     {
         if (disposed) return;
         disposed = true;
-        icon.Hide();
-        icon.Dispose();
-        menu.Dispose();
+        var failures = new List<Exception>();
+        try { icon.Hide(); } catch (Exception exception) { failures.Add(exception); }
+        try { icon.Dispose(); } catch (Exception exception) { failures.Add(exception); }
+        try { menu.Dispose(); } catch (Exception exception) { failures.Add(exception); }
+        if (failures.Count > 0) throw new AggregateException(failures);
     }
 
     private sealed class WinFormsTrayPlatformFactory : ITrayPlatformFactory
