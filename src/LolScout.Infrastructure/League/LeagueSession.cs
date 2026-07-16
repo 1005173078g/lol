@@ -37,9 +37,10 @@ public sealed class LeagueSession(LeagueClientDiscovery discovery, ILeagueHttpTr
         catch (JsonException ex) { throw new ProtocolChangedException("Unknown official Live Client response.", ex); }
         if (players is null || players.Length != 10 || string.IsNullOrWhiteSpace(activeId)) throw new ParticipantsUnavailableException();
         if (players.Any(p => p.Team is null || p.ChampionName is null || p.RiotIdGameName is null || p.RiotIdTagLine is null)) throw new ProtocolChangedException("Required player fields are missing.");
-        if (players.Any(p => p.Team is not ("ORDER" or "CHAOS") || string.IsNullOrWhiteSpace(p.RiotIdGameName) || string.IsNullOrWhiteSpace(p.RiotIdTagLine))) throw new ParticipantsUnavailableException();
+        if (players.Any(p => p.Team is not ("ORDER" or "CHAOS"))) throw new ProtocolChangedException("Unknown player team value.");
+        if (players.Any(p => string.IsNullOrWhiteSpace(p.RiotIdGameName) || string.IsNullOrWhiteSpace(p.RiotIdTagLine))) throw new ParticipantsUnavailableException();
         if (players.Select(p => $"{p.RiotIdGameName}#{p.RiotIdTagLine}").Distinct(StringComparer.Ordinal).Count() != 10) throw new ProtocolChangedException("Player identities are duplicated.");
-        var own = players.SingleOrDefault(p => $"{p.RiotIdGameName}#{p.RiotIdTagLine}" == activeId) ?? throw new ParticipantsUnavailableException();
+        var own = players.SingleOrDefault(p => string.Equals($"{p.RiotIdGameName}#{p.RiotIdTagLine}", activeId, StringComparison.OrdinalIgnoreCase)) ?? throw new ParticipantsUnavailableException();
         var enemies = players.Where(p => p.Team != own.Team).ToArray();
         if (players.Count(p => p.Team == own.Team) != 5 || enemies.Length != 5) throw new ParticipantsUnavailableException();
         var result = new List<LiveParticipant>(5);
@@ -52,20 +53,38 @@ public sealed class LeagueSession(LeagueClientDiscovery discovery, ILeagueHttpTr
     }
 }
 
-public sealed class LeagueHttpTransport : ILeagueHttpTransport, IDisposable
+public sealed record LeagueRequestHandler(HttpMessageHandler Handler, Func<bool> PinRejected);
+public interface ILeagueRequestHandlerFactory { LeagueRequestHandler Create(); }
+
+internal sealed class PinnedLeagueRequestHandlerFactory : ILeagueRequestHandlerFactory
+{
+    public LeagueRequestHandler Create()
+    {
+        var pinRejected = false;
+        var handler = new HttpClientHandler
+        {
+            ServerCertificateCustomValidationCallback = (_, cert, _, _) =>
+            {
+                var valid = cert is not null && LeagueHttpTransport.IsPinnedCertificate(cert, DateTimeOffset.UtcNow);
+                pinRejected = !valid;
+                return valid;
+            }
+        };
+        return new(handler, () => pinRejected);
+    }
+}
+
+public sealed class LeagueHttpTransport : ILeagueHttpTransport
 {
     private const string Pin = "231788E9B32445B63D92C87931610203E322D8EADC65D21773707D78A6C93B2C";
-    private readonly HttpClient client; private int pinRejected;
-    public LeagueHttpTransport() : this(null) { }
-    public LeagueHttpTransport(HttpMessageHandler? handler)
-    {
-        _ = Convert.FromHexString(Pin);
-        if (handler is null) handler = new HttpClientHandler { ServerCertificateCustomValidationCallback = (_, cert, _, _) => { var valid = cert is not null && IsPinnedCertificate(cert, DateTimeOffset.UtcNow); Interlocked.Exchange(ref pinRejected, valid ? 0 : 1); return valid; } };
-        client = new(handler);
-    }
+    private readonly ILeagueRequestHandlerFactory handlerFactory;
+    public LeagueHttpTransport() : this(new PinnedLeagueRequestHandlerFactory()) { }
+    public LeagueHttpTransport(ILeagueRequestHandlerFactory handlerFactory) { this.handlerFactory = handlerFactory; }
     public async Task<string> GetStringAsync(Uri uri, ReadOnlyMemory<char> token, CancellationToken cancellationToken)
     {
         if (uri.Scheme != "https" || uri.Host != "127.0.0.1") throw new InvalidOperationException("Only HTTPS IPv4 loopback is allowed.");
+        var requestHandler = handlerFactory.Create();
+        using var client = new HttpClient(requestHandler.Handler, disposeHandler: true);
         using var request = new HttpRequestMessage(HttpMethod.Get, uri);
         if (!token.IsEmpty)
         {
@@ -74,16 +93,17 @@ public sealed class LeagueHttpTransport : ILeagueHttpTransport, IDisposable
             finally { Array.Clear(chars); }
         }
         try { using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken); response.EnsureSuccessStatusCode(); return await response.Content.ReadAsStringAsync(cancellationToken); }
-        catch (HttpRequestException ex) when (Interlocked.Exchange(ref pinRejected, 0) == 1 || ex.InnerException is CertificatePinRejectedException) { throw new CertificatePinMismatchException(ex); }
+        catch (HttpRequestException ex) when (requestHandler.PinRejected()) { throw new CertificatePinMismatchException(ex); }
     }
-    public static bool IsPinnedCertificate(X509Certificate2 certificate, DateTimeOffset now)
+    public static bool IsPinnedCertificate(X509Certificate2 certificate, DateTimeOffset now) => IsPinnedCertificate(certificate, now, Pin);
+    public static bool IsPinnedCertificate(X509Certificate2 certificate, DateTimeOffset now, string pin)
     {
-        byte[] expected; try { expected = Convert.FromHexString(Pin); } catch (FormatException) { return false; }
+        byte[] expected; try { expected = Convert.FromHexString(pin); } catch (FormatException) { return false; }
+        if (expected.Length != 32) return false;
         var actual = SHA256.HashData(certificate.RawData);
         return expected.Length == actual.Length && CryptographicOperations.FixedTimeEquals(expected, actual)
             && certificate.GetNameInfo(X509NameType.SimpleName, false) == "rclient"
             && certificate.GetNameInfo(X509NameType.SimpleName, true).Contains("Riot Games", StringComparison.Ordinal)
             && now.UtcDateTime >= certificate.NotBefore.ToUniversalTime() && now.UtcDateTime <= certificate.NotAfter.ToUniversalTime();
     }
-    public void Dispose() => client.Dispose();
 }

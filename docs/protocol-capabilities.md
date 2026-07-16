@@ -21,8 +21,8 @@ The sanitized fixture is hand-authored from the official playerlist field contra
 
 ## Safety boundaries
 
-- League requests are limited to HTTPS loopback addresses derived from the running client's local lockfile. Certificate validation is never disabled.
+- League requests are limited to HTTPS loopback. The LCU port and token come only from the single running `LeagueClientUx` process's self-declared command line. Certificate validation is never disabled.
 - WeGame requests are not attempted unless a local configuration explicitly declares a validated HTTPS host. No such endpoint was verified in this run.
 - Authentication headers, cookies, tokens, tickets, session material, player identifiers, query parameters, raw URLs, and raw responses are never written to the console, artifacts, documentation, or source control.
 - A successful probe may create only `artifacts/probe/<command>.shape.json`; these files contain allowlisted static protocol field names, JSON types, array lengths, and the first array item's shape. Sensitive, unknown, dynamic, or duplicate field names become stable per-object keys such as `redacted-field-1`; their original names and values are discarded.
-- These results do not authorize Task 4 or Task 5 adapters. Re-run the probe with the relevant client active before defining DTOs or protocol mappings.
+- Historical note: the initial local probe did not authorize adapters because it obtained no response contract. Task 4 is now authorized only by the later user decision plus Riot's official Live Client contract above; CN runtime behavior remains unverified. Task 5 remains unauthorized by these probe results.

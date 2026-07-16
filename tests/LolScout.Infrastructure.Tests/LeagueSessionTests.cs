@@ -41,12 +41,13 @@ public sealed class LeagueSessionTests
     [Theory]
     [InlineData("UNKNOWN", "Enemy1", "TEST")]
     [InlineData("ORDER", "", "TEST")]
-    public async Task Unknown_team_or_hidden_identity_is_rejected(string team, string gameName, string tag)
+    public async Task Unknown_team_is_protocol_change_but_hidden_identity_is_unavailable(string team, string gameName, string tag)
     {
         var json = (await Fixture()).Replace("\"team\":\"CHAOS\",\"championName\":\"Ahri\",\"riotIdGameName\":\"Enemy1\",\"riotIdTagLine\":\"TEST\"",
             $"\"team\":\"{team}\",\"championName\":\"Ahri\",\"riotIdGameName\":\"{gameName}\",\"riotIdTagLine\":\"{tag}\"");
         var act = () => Session(new StubTransport("\"Ally1#TEST\"", json), GamePhase.InGame).GetParticipantsAsync(default);
-        await act.Should().ThrowAsync<ParticipantsUnavailableException>();
+        if (team == "UNKNOWN") await act.Should().ThrowAsync<ProtocolChangedException>();
+        else await act.Should().ThrowAsync<ParticipantsUnavailableException>();
     }
 
     [Fact]
@@ -95,12 +96,15 @@ public sealed class LeagueSessionTests
         process.ToString().Should().NotContain("fictional-secret");
         using var connection = new LeagueClientDiscovery(new StubProcesses(process)).Discover();
         connection.ToString().Should().NotContain("fictional-secret");
+        typeof(LeagueClientConnection).GetFields(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+            .Should().NotContain(f => f.FieldType == typeof(string));
     }
 
     [Fact]
     public async Task Certificate_failure_maps_to_stable_public_exception()
     {
-        var transport = new LeagueHttpTransport(new ThrowingHandler(new HttpRequestException("TLS", new CertificatePinRejectedException())));
+        var transport = new LeagueHttpTransport(new StubHandlerFactory(
+            new LeagueRequestHandler(new ThrowingHandler(new HttpRequestException("TLS")), () => true)));
         var act = () => transport.GetStringAsync(new Uri("https://127.0.0.1:2999/liveclientdata/playerlist"), null, default);
         await act.Should().ThrowAsync<CertificatePinMismatchException>();
     }
@@ -114,6 +118,37 @@ public sealed class LeagueSessionTests
         var act = () => LeagueHttpTransport.IsPinnedCertificate(cert, DateTimeOffset.UtcNow);
         act.Should().NotThrow();
         LeagueHttpTransport.IsPinnedCertificate(cert, DateTimeOffset.UtcNow).Should().BeFalse();
+    }
+
+    [Fact]
+    public void Pin_with_wrong_sha256_length_is_rejected()
+    {
+        using var key = RSA.Create(2048);
+        var request = new CertificateRequest("CN=rclient", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        using var cert = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
+        LeagueHttpTransport.IsPinnedCertificate(cert, DateTimeOffset.UtcNow, "00").Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Concurrent_pin_and_connection_failures_do_not_cross_classify()
+    {
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var factory = new StubHandlerFactory(
+            new LeagueRequestHandler(new GatedThrowingHandler(gate.Task, new HttpRequestException("pin failed")), () => true),
+            new LeagueRequestHandler(new GatedThrowingHandler(gate.Task, new HttpRequestException("connection failed")), () => false));
+        var transport = new LeagueHttpTransport(factory);
+        var pin = transport.GetStringAsync(new Uri("https://127.0.0.1:2999/liveclientdata/playerlist"), default, default);
+        var connection = transport.GetStringAsync(new Uri("https://127.0.0.1:2999/liveclientdata/playerlist"), default, default);
+        gate.SetResult();
+        await FluentActions.Awaiting(() => pin).Should().ThrowAsync<CertificatePinMismatchException>();
+        await FluentActions.Awaiting(() => connection).Should().ThrowAsync<HttpRequestException>().WithMessage("connection failed");
+    }
+
+    [Fact]
+    public async Task Active_identity_comparison_is_ordinal_ignore_case()
+    {
+        var enemies = await Session(new StubTransport("\"ally1#test\"", await Fixture()), GamePhase.InGame).GetParticipantsAsync(default);
+        enemies.Should().HaveCount(5);
     }
 
     private static LeagueSession Session(ILeagueHttpTransport transport, GamePhase phase = GamePhase.ChampionSelect) =>
@@ -131,5 +166,14 @@ public sealed class LeagueSessionTests
     private sealed class ThrowingHandler(Exception exception) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) => Task.FromException<HttpResponseMessage>(exception);
+    }
+    private sealed class GatedThrowingHandler(Task gate, Exception exception) : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) { await gate; throw exception; }
+    }
+    private sealed class StubHandlerFactory(params LeagueRequestHandler[] handlers) : ILeagueRequestHandlerFactory
+    {
+        private readonly Queue<LeagueRequestHandler> handlers = new(handlers);
+        public LeagueRequestHandler Create() => handlers.Dequeue();
     }
 }

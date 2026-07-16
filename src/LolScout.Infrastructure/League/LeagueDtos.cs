@@ -33,4 +33,3 @@ public sealed class DictionaryChampionCatalog(IReadOnlyDictionary<string, int> c
 public sealed class ParticipantsUnavailableException : Exception { public ParticipantsUnavailableException() : base("League participants are not currently available.") { } }
 public sealed class ProtocolChangedException : Exception { public ProtocolChangedException(string message, Exception? inner = null) : base(message, inner) { } }
 public sealed class CertificatePinMismatchException : Exception { public CertificatePinMismatchException(Exception? inner = null) : base("The League client certificate did not match the pinned identity.", inner) { } }
-public sealed class CertificatePinRejectedException : Exception { }
