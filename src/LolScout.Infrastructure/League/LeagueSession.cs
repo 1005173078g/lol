@@ -46,7 +46,8 @@ public sealed class LeagueSession(LeagueClientDiscovery discovery, ILeagueHttpTr
         var result = new List<LiveParticipant>(5);
         foreach (var p in enemies)
         {
-            if (!champions.TryGetId(p.ChampionName!, out var id) || id <= 0) throw new ProtocolChangedException("Champion name is not in the official catalog.");
+            var id = p.SkinId is > 0 ? p.SkinId.Value / 1000 : 0;
+            if (id <= 0 && (!champions.TryGetId(p.ChampionName!, out id) || id <= 0)) throw new ProtocolChangedException("Champion name is not in the official catalog.");
             result.Add(new(new(p.RiotIdGameName!, p.RiotIdTagLine!, region), p.Team == "ORDER" ? 100 : 200, id, p.ChampionName!));
         }
         return result;
