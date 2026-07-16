@@ -12,12 +12,14 @@ public sealed class MatchScoutCoordinator
     private readonly ILeagueSession session;
     private readonly IRecentMatchSource matches;
     private readonly IClock clock;
-    private readonly Channel<ScoutState> states = Channel.CreateUnbounded<ScoutState>(new() { SingleReader = true, SingleWriter = false });
-    private readonly object sync = new();
+    private readonly SemaphoreSlim stateGate = new(1, 1);
+    private readonly object watcherSync = new();
     private IReadOnlyList<LiveParticipant>? currentRoster;
     private MatchFingerprint? currentFingerprint;
     private CancellationTokenSource? batchCancellation;
-    private long batchNumber;
+    private long generation;
+    private Channel<ScoutState>? activeStates;
+    private bool watcherActive;
 
     public MatchScoutCoordinator(ILeagueSession session, IRecentMatchSource matches, IClock clock)
     {
@@ -26,29 +28,54 @@ public sealed class MatchScoutCoordinator
         this.clock = clock ?? throw new ArgumentNullException(nameof(clock));
     }
 
-    public MatchFingerprint? CurrentFingerprint { get { lock (sync) return currentFingerprint; } }
+    public MatchFingerprint? CurrentFingerprint => Volatile.Read(ref currentFingerprint);
 
     public async IAsyncEnumerable<ScoutState> WatchAsync([EnumeratorCancellation] CancellationToken cancellationToken)
     {
+        Channel<ScoutState> states;
+        lock (watcherSync)
+        {
+            if (watcherActive) throw new InvalidOperationException("Only one watcher may be active at a time.");
+            watcherActive = true;
+            states = Channel.CreateUnbounded<ScoutState>(new() { SingleReader = true, SingleWriter = false });
+            activeStates = states;
+        }
+
         using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var polling = PollAsync(lifetime.Token);
         try
         {
-            await foreach (var state in states.Reader.ReadAllAsync(cancellationToken)) yield return state;
+            await foreach (var state in states.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+                yield return state;
         }
         finally
         {
             lifetime.Cancel();
-            CancelBatch(clearRoster: true);
+            await ResetAsync(status: null).ConfigureAwait(false);
             try { await polling.ConfigureAwait(false); } catch (OperationCanceledException) { }
+            states.Writer.TryComplete();
+            lock (watcherSync)
+            {
+                if (ReferenceEquals(activeStates, states))
+                {
+                    activeStates = null;
+                    watcherActive = false;
+                }
+            }
         }
     }
 
-    public Task RefreshAsync(CancellationToken cancellationToken = default)
+    public async Task RefreshAsync(CancellationToken cancellationToken = default)
     {
-        IReadOnlyList<LiveParticipant>? roster;
-        lock (sync) roster = currentRoster;
-        return roster is null ? Task.CompletedTask : StartBatchAsync(roster, cancellationToken);
+        BatchContext? batch = null;
+        await stateGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (currentRoster is not null) batch = CreateBatchInsideGate(currentRoster, cancellationToken);
+        }
+        finally { stateGate.Release(); }
+        if (batch is not null) await RunBatchAsync(batch, deferStart: true).ConfigureAwait(false);
     }
 
     private async Task PollAsync(CancellationToken cancellationToken)
@@ -59,26 +86,34 @@ public sealed class MatchScoutCoordinator
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var phase = await session.GetPhaseAsync(cancellationToken).ConfigureAwait(false);
-                Publish(new(Map(phase), SnapshotPlayers(), clock.UtcNow));
-                if (phase == GamePhase.Ended)
+                if (phase is GamePhase.Ended or GamePhase.Waiting)
                 {
-                    CancelBatch(clearRoster: true);
-                    await clock.DelayAsync(TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false);
-                    continue;
-                }
-                if (phase is GamePhase.Loading or GamePhase.InGame)
-                {
-                    await DiscoverAsync(cancellationToken).ConfigureAwait(false);
-                    await clock.DelayAsync(TimeSpan.FromMilliseconds(500), cancellationToken).ConfigureAwait(false);
+                    await ResetAsync(Map(phase)).ConfigureAwait(false);
                 }
                 else
                 {
-                    await clock.DelayAsync(phase == GamePhase.Waiting ? TimeSpan.FromSeconds(1) : TimeSpan.FromMilliseconds(500), cancellationToken).ConfigureAwait(false);
+                    await PublishPhaseAsync(phase, cancellationToken).ConfigureAwait(false);
+                    if (phase is GamePhase.Loading or GamePhase.InGame)
+                        await DiscoverAsync(cancellationToken).ConfigureAwait(false);
                 }
+
+                var delay = phase == GamePhase.Waiting || phase == GamePhase.Ended
+                    ? TimeSpan.FromSeconds(1)
+                    : TimeSpan.FromMilliseconds(500);
+                await clock.DelayAsync(delay, cancellationToken).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
-        finally { states.Writer.TryComplete(); }
+    }
+
+    private async Task PublishPhaseAsync(GamePhase phase, CancellationToken cancellationToken)
+    {
+        await stateGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            Publish(new(Map(phase), SnapshotPlayers(), clock.UtcNow));
+        }
+        finally { stateGate.Release(); }
     }
 
     private async Task DiscoverAsync(CancellationToken cancellationToken)
@@ -86,49 +121,73 @@ public sealed class MatchScoutCoordinator
         IReadOnlyList<LiveParticipant> roster;
         try { roster = await session.GetParticipantsAsync(cancellationToken).ConfigureAwait(false); }
         catch (OperationCanceledException) { throw; }
-        catch { return; } // Live Client API can be unavailable during cold start/loading.
+        catch { return; }
         if (roster.Count != 5) return;
+
         var fingerprint = MatchFingerprint.Create(roster);
-        lock (sync)
+        BatchContext? batch = null;
+        await stateGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
             if (fingerprint == currentFingerprint) return;
             currentFingerprint = fingerprint;
             currentRoster = roster.ToArray();
+            batch = CreateBatchInsideGate(currentRoster, cancellationToken);
         }
-        _ = StartBatchAsync(roster, cancellationToken);
+        finally { stateGate.Release(); }
+
+        _ = RunBatchAsync(batch, deferStart: false);
     }
 
-    private Task StartBatchAsync(IReadOnlyList<LiveParticipant> roster, CancellationToken cancellationToken)
+    private BatchContext CreateBatchInsideGate(IReadOnlyList<LiveParticipant> roster, CancellationToken cancellationToken)
     {
-        CancellationTokenSource cancellation;
-        long number;
-        lock (sync)
+        var batchGeneration = ++generation;
+        CancelBatchInsideGate();
+        batchCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        return new(batchGeneration, roster.ToArray(), batchCancellation.Token);
+    }
+
+    private async Task RunBatchAsync(BatchContext batch, bool deferStart)
+    {
+        if (deferStart)
         {
-            batchCancellation?.Cancel();
-            batchCancellation?.Dispose();
-            batchCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            cancellation = batchCancellation;
-            number = ++batchNumber;
+            try { await clock.DelayAsync(TimeSpan.Zero, batch.Token).ConfigureAwait(false); }
+            catch (OperationCanceledException) when (batch.Token.IsCancellationRequested) { return; }
         }
-        var initial = roster.Select(x => new PlayerScoutState(x)).ToArray();
-        Publish(new(ScoutStatus.Querying, initial, clock.UtcNow));
-        return RunBatchAsync(number, roster, initial, cancellation.Token);
-    }
+        var initial = batch.Roster.Select(x => new PlayerScoutState(x)).ToArray();
+        await stateGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        try
+        {
+            if (!IsCurrent(batch.Generation, batch.Token)) return;
+            Publish(new(ScoutStatus.Querying, initial, clock.UtcNow));
+        }
+        finally { stateGate.Release(); }
 
-    private async Task RunBatchAsync(long number, IReadOnlyList<LiveParticipant> roster, PlayerScoutState[] results, CancellationToken cancellationToken)
-    {
-        var tasks = roster.Select((participant, index) => QueryPlayerAsync(number, participant, index, results, cancellationToken)).ToArray();
+        // Requests never start in the same critical section as the initial publication.
+        await Task.Yield();
+        var tasks = batch.Roster.Select((participant, index) =>
+            QueryPlayerAsync(batch.Generation, participant, index, initial, batch.Token)).ToArray();
         try { await Task.WhenAll(tasks).ConfigureAwait(false); }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { return; }
-        lock (sync)
+        catch (OperationCanceledException) when (batch.Token.IsCancellationRequested) { return; }
+
+        await stateGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        try
         {
-            if (number != batchNumber || cancellationToken.IsCancellationRequested) return;
-            Publish(new(ScoutStatus.Complete, results.ToArray(), clock.UtcNow));
+            if (IsCurrent(batch.Generation, batch.Token))
+                Publish(new(ScoutStatus.Complete, initial.ToArray(), clock.UtcNow));
         }
+        finally { stateGate.Release(); }
     }
 
-    private async Task QueryPlayerAsync(long number, LiveParticipant participant, int index, PlayerScoutState[] results, CancellationToken cancellationToken)
+    private async Task QueryPlayerAsync(long batchGeneration, LiveParticipant participant, int index, PlayerScoutState[] results, CancellationToken cancellationToken)
     {
+        await stateGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        try
+        {
+            if (!IsCurrent(batchGeneration, cancellationToken)) return;
+        }
+        finally { stateGate.Release(); }
+
         PlayerScoutState result;
         try
         {
@@ -137,32 +196,53 @@ public sealed class MatchScoutCoordinator
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch (Exception exception) { result = new(participant, Error: exception.Message); }
-        lock (sync)
+
+        await stateGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        try
         {
-            if (number != batchNumber || cancellationToken.IsCancellationRequested) return;
+            if (!IsCurrent(batchGeneration, cancellationToken)) return;
             results[index] = result;
             Publish(new(ScoutStatus.Querying, results.ToArray(), clock.UtcNow));
         }
+        finally { stateGate.Release(); }
     }
 
-    private IReadOnlyList<PlayerScoutState> SnapshotPlayers()
+    private async Task ResetAsync(ScoutStatus? status)
     {
-        lock (sync) return currentRoster?.Select(x => new PlayerScoutState(x)).ToArray() ?? [];
-    }
-
-    private void CancelBatch(bool clearRoster)
-    {
-        lock (sync)
+        await stateGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        try
         {
-            batchNumber++;
-            batchCancellation?.Cancel();
-            batchCancellation?.Dispose();
-            batchCancellation = null;
-            if (clearRoster) { currentRoster = null; currentFingerprint = null; }
+            generation++;
+            CancelBatchInsideGate();
+            currentRoster = null;
+            currentFingerprint = null;
+            if (status is not null) Publish(new(status.Value, [], clock.UtcNow));
         }
+        finally { stateGate.Release(); }
     }
 
-    private void Publish(ScoutState state) => states.Writer.TryWrite(state);
+    private bool IsCurrent(long batchGeneration, CancellationToken token) =>
+        batchGeneration == generation && !token.IsCancellationRequested;
+
+    private void CancelBatchInsideGate()
+    {
+        batchCancellation?.Cancel();
+        batchCancellation?.Dispose();
+        batchCancellation = null;
+    }
+
+    private IReadOnlyList<PlayerScoutState> SnapshotPlayers() =>
+        currentRoster?.Select(x => new PlayerScoutState(x)).ToArray() ?? [];
+
+    private void Publish(ScoutState state)
+    {
+        Channel<ScoutState>? states;
+        lock (watcherSync) states = activeStates;
+        states?.Writer.TryWrite(state);
+    }
+
+    private sealed record BatchContext(long Generation, IReadOnlyList<LiveParticipant> Roster, CancellationToken Token);
+
     private static ScoutStatus Map(GamePhase phase) => phase switch
     {
         GamePhase.Waiting => ScoutStatus.Waiting,

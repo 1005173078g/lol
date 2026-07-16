@@ -27,3 +27,22 @@ Recovered the previous agent's uncommitted work in `LolScout.sln`, `Ports.cs`, `
 
 - The batch number guards both incremental `Querying` updates and final `Complete`, while cancellation handles cooperative sources. Together these prevent an old refresh batch from overwriting a newer one even if a source returns late.
 - Tests cover the required ordered state subsequence, same-match automatic dedupe, five-way concurrency, isolated failure, deterministic `Ended` cancellation/fingerprint clearing, and refresh cancellation/stale-result suppression.
+
+## Review remediation
+
+- Replaced the split field lock/batch startup sequence with one asynchronous `SemaphoreSlim` state gate. Refresh, discovery batch creation, generation increments, cancellation, and Ended/Waiting reset now share that gate.
+- Every batch checks generation plus cancellation before initial `Querying`, before each source request, before every incremental result, and before `Complete`.
+- Manual refresh uses an `IClock` zero-duration scheduling point. Concurrent refresh calls establish their generations before the fake scheduler releases startup, so only the latest generation starts or publishes; this removed a Release-only race that reproduced as 15 rather than 10 source calls.
+- Ended/Waiting increment generation, cancel the batch, and clear roster/fingerprint inside the gate before publishing an empty state. A test advances another Ended poll and verifies no later request starts.
+- Replaced the shared lifetime channel with a per-watch channel. One UI watcher is allowed at a time; a concurrent second watcher deterministically throws `InvalidOperationException`, and a new watcher is allowed after disposal of the first.
+- Added direct fingerprint normalization/order coverage and non-cooperative stale result and stale exception sources to verify neither can leak after refresh.
+- All two-second waits are deadlock guards around controllable completion sources/semaphores, not scheduling sleeps.
+
+### Review verification
+
+- `dotnet test tests\LolScout.App.Tests\LolScout.App.Tests.csproj --filter MatchScoutCoordinatorTests --no-restore`
+  - PASS: 10 passed, 0 failed, 0 skipped (99 ms).
+- `dotnet test tests\LolScout.App.Tests\LolScout.App.Tests.csproj -c Release --filter MatchScoutCoordinatorTests --no-restore`
+  - PASS: 10 passed, 0 failed, 0 skipped (107 ms).
+- `dotnet test LolScout.sln -c Release --no-restore`
+  - PASS: Core 17/17, Infrastructure 46/46, App 10/10; total 73 passed, 0 failed, 0 skipped.

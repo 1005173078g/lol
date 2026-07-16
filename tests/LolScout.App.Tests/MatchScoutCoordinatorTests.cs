@@ -11,6 +11,119 @@ namespace LolScout.App.Tests;
 public sealed class MatchScoutCoordinatorTests
 {
     [Fact]
+    public void Fingerprint_normalizes_case_and_is_independent_of_roster_order()
+    {
+        var players = Players();
+        var reordered = players.Reverse().Select((player, index) => index == 0
+            ? player with { Player = new(player.Player.GameName.ToLowerInvariant(), " t ", "cn1") }
+            : player).ToArray();
+
+        MatchFingerprint.Create(players).Should().Be(MatchFingerprint.Create(reordered));
+    }
+
+    [Fact]
+    public async Task Concurrent_second_watcher_is_rejected_and_a_later_watcher_is_allowed()
+    {
+        var sut = new MatchScoutCoordinator(new FakeSession(GamePhase.Waiting), new ImmediateSource(), new FakeClock());
+        using var firstStop = new CancellationTokenSource();
+        await using var first = sut.WatchAsync(firstStop.Token).GetAsyncEnumerator();
+        (await first.MoveNextAsync()).Should().BeTrue();
+
+        var second = async () => await sut.WatchAsync(CancellationToken.None).FirstAsync();
+        await second.Should().ThrowAsync<InvalidOperationException>();
+
+        firstStop.Cancel();
+        await first.DisposeAsync();
+        using var thirdStop = new CancellationTokenSource();
+        await using var third = sut.WatchAsync(thirdStop.Token).GetAsyncEnumerator();
+        (await third.MoveNextAsync()).Should().BeTrue();
+        thirdStop.Cancel();
+    }
+
+    [Fact]
+    public async Task Refresh_cancelled_before_initial_publish_starts_no_requests()
+    {
+        var session = new FakeSession(GamePhase.Loading);
+        var source = new CountingSource();
+        var clock = new FakeClock();
+        var sut = new MatchScoutCoordinator(session, source, clock);
+        using var stop = new CancellationTokenSource();
+        var states = Collect(sut.WatchAsync(stop.Token), stop.Token);
+        await source.AllCalled.Task.WaitAsync(TimeSpan.FromSeconds(2)); // Deadlock guard, not scheduler timing.
+        var queryingBefore = states.Count(x => x.Status == ScoutStatus.Querying);
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+
+        var refresh = async () => await sut.RefreshAsync(cancelled.Token);
+        await refresh.Should().ThrowAsync<OperationCanceledException>();
+
+        states.Count(x => x.Status == ScoutStatus.Querying).Should().Be(queryingBefore);
+        source.Calls.Should().Be(5);
+        stop.Cancel();
+    }
+
+    [Fact]
+    public async Task Two_concurrent_refreshes_only_start_and_publish_the_latest_generation()
+    {
+        var source = new CountingSource();
+        var clock = new FakeClock();
+        var sut = new MatchScoutCoordinator(new FakeSession(GamePhase.Loading), source, clock);
+        using var stop = new CancellationTokenSource();
+        var states = Collect(sut.WatchAsync(stop.Token), stop.Token);
+        await source.AllCalled.Task.WaitAsync(TimeSpan.FromSeconds(2)); // Deadlock guard.
+        await WaitUntil(() => states.Count(x => x.Status == ScoutStatus.Complete) == 1);
+
+        var refreshes = Task.WhenAll(sut.RefreshAsync(), sut.RefreshAsync());
+        await clock.AdvanceAsync(TimeSpan.Zero);
+        await refreshes;
+
+        source.Calls.Should().Be(10);
+        states.Count(x => x.Status == ScoutStatus.Complete).Should().Be(2);
+        stop.Cancel();
+    }
+
+    [Fact]
+    public async Task Stale_batch_exception_does_not_publish_after_refresh()
+    {
+        var source = new StaleExceptionSource();
+        var clock = new FakeClock();
+        var sut = new MatchScoutCoordinator(new FakeSession(GamePhase.Loading), source, clock);
+        using var stop = new CancellationTokenSource();
+        var states = Collect(sut.WatchAsync(stop.Token), stop.Token);
+        await source.OldStarted.Task.WaitAsync(TimeSpan.FromSeconds(2)); // Deadlock guard.
+
+        var refresh = sut.RefreshAsync();
+        await clock.AdvanceAsync(TimeSpan.Zero);
+        await refresh;
+        source.FailOld.TrySetResult();
+        await source.OldFinished.Task.WaitAsync(TimeSpan.FromSeconds(2)); // Deadlock guard.
+
+        states.Where(x => x.Status == ScoutStatus.Querying)
+            .SelectMany(x => x.Players).Should().NotContain(x => x.Error == "stale failure");
+        stop.Cancel();
+    }
+
+    [Fact]
+    public async Task Stale_batch_results_do_not_publish_after_refresh()
+    {
+        var source = new StaleResultSource();
+        var clock = new FakeClock();
+        var sut = new MatchScoutCoordinator(new FakeSession(GamePhase.Loading), source, clock);
+        using var stop = new CancellationTokenSource();
+        var states = Collect(sut.WatchAsync(stop.Token), stop.Token);
+        await source.OldStarted.Task.WaitAsync(TimeSpan.FromSeconds(2)); // Deadlock guard.
+
+        var refresh = sut.RefreshAsync();
+        await clock.AdvanceAsync(TimeSpan.Zero);
+        await refresh;
+        source.ReleaseOld.TrySetResult();
+        await source.OldFinished.Task.WaitAsync(TimeSpan.FromSeconds(2)); // Deadlock guard.
+
+        states.Where(x => x.Status is ScoutStatus.Querying or ScoutStatus.Complete)
+            .SelectMany(x => x.Players).Should().NotContain(x => x.Analysis != null && x.Analysis.MatchCount == 1);
+        stop.Cancel();
+    }
+    [Fact]
     public async Task Polls_through_phases_and_queries_all_five_players_concurrently()
     {
         var session = new FakeSession(GamePhase.Waiting, GamePhase.ChampionSelect, GamePhase.Loading, GamePhase.InGame);
@@ -22,7 +135,7 @@ public sealed class MatchScoutCoordinatorTests
 
         await clock.AdvanceAsync(TimeSpan.FromSeconds(1));
         await clock.AdvanceAsync(TimeSpan.FromMilliseconds(500));
-        await source.AllStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await source.AllStarted.Task.WaitAsync(TimeSpan.FromSeconds(2)); // Deadlock guard.
         source.Release.SetResult();
         await WaitUntil(() => states.Any(x => x.Status == ScoutStatus.Complete));
         stop.Cancel();
@@ -42,7 +155,7 @@ public sealed class MatchScoutCoordinatorTests
         using var stop = new CancellationTokenSource();
         var states = Collect(sut.WatchAsync(stop.Token), stop.Token);
 
-        await source.AllCalled.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await source.AllCalled.Task.WaitAsync(TimeSpan.FromSeconds(2)); // Deadlock guard.
         await clock.AdvanceAsync(TimeSpan.FromMilliseconds(500));
         await clock.AdvanceAsync(TimeSpan.FromMilliseconds(500));
         await clock.AdvanceAsync(TimeSpan.FromMilliseconds(500));
@@ -62,12 +175,15 @@ public sealed class MatchScoutCoordinatorTests
     {
         var session = new FakeSession(GamePhase.Loading, GamePhase.InGame);
         var source = new RefreshSource();
-        var sut = new MatchScoutCoordinator(session, source, new FakeClock());
+        var clock = new FakeClock();
+        var sut = new MatchScoutCoordinator(session, source, clock);
         using var stop = new CancellationTokenSource();
         var states = Collect(sut.WatchAsync(stop.Token), stop.Token);
-        await source.FirstBatchStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await source.FirstBatchStarted.Task.WaitAsync(TimeSpan.FromSeconds(2)); // Deadlock guard.
 
-        await sut.RefreshAsync();
+        var refresh = sut.RefreshAsync();
+        await clock.AdvanceAsync(TimeSpan.Zero);
+        await refresh;
         await WaitUntil(() => states.Count(x => x.Status == ScoutStatus.Complete) == 1);
         source.ReleaseOld.SetResult();
         await Task.Yield();
@@ -89,13 +205,18 @@ public sealed class MatchScoutCoordinatorTests
         using var stop = new CancellationTokenSource();
         var states = Collect(sut.WatchAsync(stop.Token), stop.Token);
 
-        await source.AllStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await source.AllStarted.Task.WaitAsync(TimeSpan.FromSeconds(2)); // Deadlock guard.
         sut.CurrentFingerprint.Should().NotBeNull();
         await clock.AdvanceAsync(TimeSpan.FromMilliseconds(500));
-        await source.AllCancelled.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await source.AllCancelled.Task.WaitAsync(TimeSpan.FromSeconds(2)); // Deadlock guard.
         await WaitUntil(() => states.Any(x => x.Status == ScoutStatus.Ended));
 
         sut.CurrentFingerprint.Should().BeNull();
+        states.Last(x => x.Status == ScoutStatus.Ended).Players.Should().BeEmpty();
+        var callsAtEnd = source.Calls;
+        await clock.AdvanceAsync(TimeSpan.FromSeconds(1));
+        await WaitUntil(() => states.Count(x => x.Status == ScoutStatus.Ended) >= 2);
+        source.Calls.Should().Be(callsAtEnd, "no request may start after Ended was published");
         stop.Cancel();
     }
 
@@ -136,10 +257,22 @@ public sealed class MatchScoutCoordinatorTests
 
         public async Task AdvanceAsync(TimeSpan expected)
         {
-            var started = await delayStarted.WaitAsync(TimeSpan.FromSeconds(2));
-            started.Should().BeTrue();
-            pending.TryDequeue(out var delay).Should().BeTrue();
-            delay!.Duration.Should().Be(expected);
+            var deferred = new List<PendingDelay>();
+            PendingDelay? delay = null;
+            while (delay is null)
+            {
+                var started = await delayStarted.WaitAsync(TimeSpan.FromSeconds(2)); // Deadlock guard.
+                started.Should().BeTrue();
+                pending.TryDequeue(out var candidate).Should().BeTrue();
+                if (candidate!.Completion.Task.IsCompleted) continue;
+                if (candidate.Duration == expected) delay = candidate;
+                else deferred.Add(candidate);
+            }
+            foreach (var item in deferred)
+            {
+                pending.Enqueue(item);
+                delayStarted.Release();
+            }
             delay.Completion.TrySetResult();
         }
 
@@ -173,6 +306,7 @@ public sealed class MatchScoutCoordinatorTests
     private sealed class NeverCompletingSource : IRecentMatchSource
     {
         private int started, cancelled;
+        public int Calls => started;
         public TaskCompletionSource AllStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource AllCancelled { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public Task<IReadOnlyList<RecentMatch>> GetRankedMatchesAsync(PlayerIdentity player, int limit, CancellationToken cancellationToken)
@@ -186,5 +320,63 @@ public sealed class MatchScoutCoordinatorTests
             });
             return completion.Task;
         }
+    }
+    private sealed class CountingSource : IRecentMatchSource
+    {
+        private int calls;
+        public int Calls => calls;
+        public TaskCompletionSource AllCalled { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public Task<IReadOnlyList<RecentMatch>> GetRankedMatchesAsync(PlayerIdentity player, int limit, CancellationToken cancellationToken)
+        {
+            if (Interlocked.Increment(ref calls) == 5) AllCalled.TrySetResult();
+            return Task.FromResult<IReadOnlyList<RecentMatch>>([]);
+        }
+    }
+    private sealed class StaleExceptionSource : IRecentMatchSource
+    {
+        private int calls, oldFinished;
+        public TaskCompletionSource OldStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource FailOld { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource OldFinished { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public async Task<IReadOnlyList<RecentMatch>> GetRankedMatchesAsync(PlayerIdentity player, int limit, CancellationToken cancellationToken)
+        {
+            var call = Interlocked.Increment(ref calls);
+            if (call <= 5)
+            {
+                if (call == 5) OldStarted.TrySetResult();
+                await FailOld.Task;
+                if (Interlocked.Increment(ref oldFinished) == 5) OldFinished.TrySetResult();
+                throw new InvalidOperationException("stale failure");
+            }
+            return [new(true, false, "MID", 1, 1, 1, 1)];
+        }
+    }
+    private sealed class StaleResultSource : IRecentMatchSource
+    {
+        private int calls, oldFinished;
+        public TaskCompletionSource OldStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource ReleaseOld { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource OldFinished { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public async Task<IReadOnlyList<RecentMatch>> GetRankedMatchesAsync(PlayerIdentity player, int limit, CancellationToken cancellationToken)
+        {
+            var call = Interlocked.Increment(ref calls);
+            if (call <= 5)
+            {
+                if (call == 5) OldStarted.TrySetResult();
+                await ReleaseOld.Task;
+                if (Interlocked.Increment(ref oldFinished) == 5) OldFinished.TrySetResult();
+                return [new(true, false, "MID", 1, 1, 1, 1)];
+            }
+            return [new(true, false, "MID", 1, 1, 1, 1), new(true, false, "MID", 1, 1, 1, 1)];
+        }
+    }
+}
+
+file static class AsyncEnumerableTestExtensions
+{
+    public static async Task<T> FirstAsync<T>(this IAsyncEnumerable<T> source)
+    {
+        await foreach (var item in source) return item;
+        throw new InvalidOperationException("Sequence was empty.");
     }
 }
