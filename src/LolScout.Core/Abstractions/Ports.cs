@@ -20,4 +20,6 @@ public interface IRecentMatchSource
 public interface IClock
 {
     DateTimeOffset UtcNow { get; }
+
+    Task DelayAsync(TimeSpan delay, CancellationToken cancellationToken);
 }
