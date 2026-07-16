@@ -27,3 +27,13 @@
 ## 未执行
 
 - 未在真实对局中自动操作或复跑人工验收；遵守本任务仅做 EXE 基本启动检查的边界。
+
+## 独立审查修复
+
+- 日志值边界改为 fail-closed：直接使用 `Utf8JsonWriter` 写安全标量，不序列化调用方对象；复杂对象、异常、集合、嵌套值和恶意 `ToString` 均不能进入输出。Phase、ErrorCode、StatusCode、MissingField、DurationMs 分别实施枚举、正则、类型和范围约束。
+- 新增 6 个日志边界用例（定向共 8/8），覆盖嵌套 token、异常、数组、路径、玩家式 ID、恶意 `ToString`、安全枚举和数值。
+- 发布通过 Microsoft 官方 `Microsoft.Windows.SDK.BuildTools` NuGet 构建依赖定位 x64 `mt.exe`，从最终 PE 的 `#1` manifest 资源提取 XML，并精确断言唯一 `requestedExecutionLevel/@level` 为 `requireAdministrator`；工具缺失即失败，临时文件始终删除。
+- 发布前清空输出，发布后递归断言总共只有一个 `LolScout.App.exe` 且无子目录。源码/README/排障扫描 Git 跟踪文本中的凭据赋值和机器绝对路径；EXE 扫描 ASCII/UTF-16 可打印字符串中的工作树、构建用户名上下文、测试 secret 和探测标记。`PathMap` 将编译元数据中的真实工作树路径替换为 `/_/`。
+- 对构建用户名 `Administrator` 采用机器路径上下文匹配，因为自包含 .NET runtime 和必须存在的 manifest 自身包含通用权限词 `Administrator`/`requireAdministrator`；README 明确了扫描能力和这一窄例外。
+- README 将 2999 更正为 Riot 开发者文档记录的本地 Live Client Data API，并明确 LCU 为 unsupported/private、无稳定性承诺。CI 去除重复 restore，由同一发布脚本统一还原、测试、manifest 验证与扫描。
+- 复审后最终发布验证：Core 17/17、Infrastructure 59/59、App 29/29，共 105/105 通过；PE manifest XML、单 EXE 结构、源码与 EXE 安全扫描全部通过。

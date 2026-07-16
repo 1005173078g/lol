@@ -12,8 +12,6 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.0.x
-      - name: Restore
-        run: dotnet restore LolScout.sln
       - name: Test and publish
         shell: powershell
         run: .\scripts\publish.ps1
