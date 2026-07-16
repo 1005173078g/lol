@@ -80,6 +80,14 @@ public sealed class LeagueSessionTests
     }
 
     [Fact]
+    public async Task Identity_differing_only_by_case_is_protocol_change()
+    {
+        var json = (await Fixture()).Replace("Enemy2", "enemy1", StringComparison.Ordinal);
+        var act = () => Session(new StubTransport("\"Ally1#TEST\"", json), GamePhase.InGame).GetParticipantsAsync(default);
+        await act.Should().ThrowExactlyAsync<ProtocolChangedException>();
+    }
+
+    [Fact]
     public void Ambiguous_client_processes_are_rejected_without_leaking_token()
     {
         var discovery = new LeagueClientDiscovery(new StubProcesses(

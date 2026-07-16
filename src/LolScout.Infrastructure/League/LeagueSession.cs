@@ -39,7 +39,7 @@ public sealed class LeagueSession(LeagueClientDiscovery discovery, ILeagueHttpTr
         if (players.Any(p => p.Team is null || p.ChampionName is null || p.RiotIdGameName is null || p.RiotIdTagLine is null)) throw new ProtocolChangedException("Required player fields are missing.");
         if (players.Any(p => p.Team is not ("ORDER" or "CHAOS"))) throw new ProtocolChangedException("Unknown player team value.");
         if (players.Any(p => string.IsNullOrWhiteSpace(p.RiotIdGameName) || string.IsNullOrWhiteSpace(p.RiotIdTagLine))) throw new ParticipantsUnavailableException();
-        if (players.Select(p => $"{p.RiotIdGameName}#{p.RiotIdTagLine}").Distinct(StringComparer.Ordinal).Count() != 10) throw new ProtocolChangedException("Player identities are duplicated.");
+        if (players.Select(p => $"{p.RiotIdGameName}#{p.RiotIdTagLine}").Distinct(StringComparer.OrdinalIgnoreCase).Count() != 10) throw new ProtocolChangedException("Player identities are duplicated.");
         var own = players.SingleOrDefault(p => string.Equals($"{p.RiotIdGameName}#{p.RiotIdTagLine}", activeId, StringComparison.OrdinalIgnoreCase)) ?? throw new ParticipantsUnavailableException();
         var enemies = players.Where(p => p.Team != own.Team).ToArray();
         if (players.Count(p => p.Team == own.Team) != 5 || enemies.Length != 5) throw new ParticipantsUnavailableException();
