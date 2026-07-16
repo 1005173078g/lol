@@ -7,7 +7,13 @@ using LolScout.Core.Domain;
 
 namespace LolScout.App.Services;
 
-public sealed class MatchScoutCoordinator
+public interface IScoutStateSource
+{
+    IAsyncEnumerable<ScoutState> WatchAsync(CancellationToken cancellationToken);
+    Task RefreshAsync(CancellationToken cancellationToken = default);
+}
+
+public sealed class MatchScoutCoordinator : IScoutStateSource
 {
     private static readonly TimeSpan RefreshDebounce = TimeSpan.FromMilliseconds(10);
     private readonly ILeagueSession session;

@@ -8,7 +8,7 @@ namespace LolScout.App.ViewModels;
 
 public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDisposable
 {
-    private readonly MatchScoutCoordinator? coordinator;
+    private readonly IScoutStateSource? coordinator;
     private readonly IClipboardService clipboard;
     private readonly IUiDispatcher dispatcher;
     private readonly CancellationTokenSource lifetime = new();
@@ -16,6 +16,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
     private bool showWindowPending;
     private bool rosterSeen;
     private Task? watchTask;
+    private readonly Func<TimeSpan, CancellationToken, Task> retryDelay;
+    private int disposed;
 
     [ObservableProperty] private string statusText = "等待客户端";
     [ObservableProperty] private string operationStatus = "就绪";
@@ -23,11 +25,14 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
     [ObservableProperty] private bool isTopmost;
     [ObservableProperty] private bool shouldShowWindow;
 
-    public MainWindowViewModel(MatchScoutCoordinator? coordinator, IClipboardService clipboard, IUiDispatcher dispatcher)
+    public MainWindowViewModel(IScoutStateSource? coordinator, IClipboardService clipboard, IUiDispatcher dispatcher,
+        Func<TimeSpan, CancellationToken, Task>? retryDelay = null)
     {
         this.coordinator = coordinator;
         this.clipboard = clipboard ?? throw new ArgumentNullException(nameof(clipboard));
         this.dispatcher = dispatcher ?? throw new ArgumentNullException(nameof(dispatcher));
+        this.retryDelay = retryDelay ?? Task.Delay;
+        for (var index = 0; index < 5; index++) Players.Add(new());
         CopyBroadcastCommand = new AsyncRelayCommand(CopyBroadcastAsync);
         RefreshCommand = new AsyncRelayCommand(RefreshAsync);
         ToggleTopmostCommand = new RelayCommand(() => IsTopmost = !IsTopmost);
@@ -58,19 +63,24 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
 
     private async Task WatchAsync(CancellationToken cancellationToken)
     {
-        try
+        while (!cancellationToken.IsCancellationRequested)
         {
-            await foreach (var state in coordinator!.WatchAsync(cancellationToken).ConfigureAwait(false))
-                await ApplyStateAsync(state).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
-        catch (Exception exception)
-        {
-            await dispatcher.InvokeAsync(() =>
+            try
             {
-                LastCommandError = exception.Message;
-                OperationStatus = "监控已停止，请查看查询状态";
-            });
+                await foreach (var state in coordinator!.WatchAsync(cancellationToken).ConfigureAwait(false))
+                    await ApplyStateAsync(state).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { break; }
+            catch (Exception exception)
+            {
+                await dispatcher.InvokeAsync(() =>
+                {
+                    LastCommandError = exception.Message;
+                    OperationStatus = "监控暂时中断，正在重试";
+                }).ConfigureAwait(false);
+                try { await retryDelay(TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false); }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { break; }
+            }
         }
     }
 
@@ -78,9 +88,11 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
     {
         latestPlayers = state.Players;
         StatusText = ChineseStatus(state.Status);
-        while (Players.Count < state.Players.Count) Players.Add(new());
-        while (Players.Count > state.Players.Count) Players.RemoveAt(Players.Count - 1);
-        for (var index = 0; index < state.Players.Count; index++) Players[index].Update(state.Players[index]);
+        for (var index = 0; index < Players.Count; index++)
+        {
+            if (index < state.Players.Count) Players[index].Update(state.Players[index]);
+            else Players[index].Reset();
+        }
 
         if (state.Players.Count == 5 && !rosterSeen)
         {
@@ -139,6 +151,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
 
     public async ValueTask DisposeAsync()
     {
+        if (Interlocked.Exchange(ref disposed, 1) != 0) return;
         lifetime.Cancel();
         if (watchTask is not null) await watchTask.ConfigureAwait(false);
         lifetime.Dispose();

@@ -7,7 +7,7 @@ public sealed partial class PlayerCardViewModel : ObservableObject
 {
     [ObservableProperty] private string playerName = "";
     [ObservableProperty] private string championName = "";
-    [ObservableProperty] private string status = "查询中";
+    [ObservableProperty] private string status = "待识别";
     [ObservableProperty] private string overall = "等待数据";
     [ObservableProperty] private string mvp = "等待数据";
     [ObservableProperty] private string position = "等待数据";
@@ -37,6 +37,13 @@ public sealed partial class PlayerCardViewModel : ObservableObject
         ChampionPerformance = analysis.ChampionMatchCount == 0
             ? "本局英雄近期无样本"
             : $"本局英雄 {analysis.ChampionMatchCount} 场 / 胜率 {Percent(analysis.ChampionWinRate ?? 0)} / KDA {analysis.ChampionKda:0.0}";
+    }
+
+    internal void Reset()
+    {
+        PlayerName = ChampionName = "";
+        Status = "待识别";
+        Overall = Mvp = Position = ChampionPerformance = "等待数据";
     }
 
     private static string Percent(double value) => $"{Math.Round(value * 100):0}%";

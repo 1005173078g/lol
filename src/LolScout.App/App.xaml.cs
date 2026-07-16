@@ -9,6 +9,7 @@ public partial class App : System.Windows.Application
     private MainWindowViewModel? viewModel;
     private TrayIconService? tray;
     private AppComposition? composition;
+    private ShutdownCoordinator? shutdownCoordinator;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -20,9 +21,11 @@ public partial class App : System.Windows.Application
         tray = new TrayIconService(
             () => ShowMainWindow(window),
             () => viewModel.RefreshCommand.Execute(null),
-            ExitApplication);
+            ExitApplicationAsync);
+        shutdownCoordinator = new ShutdownCoordinator(
+            () => viewModel.DisposeAsync(),
+            [tray, composition]);
         viewModel.Start();
-        window.Show();
     }
 
     private static void ShowMainWindow(Window window)
@@ -32,19 +35,16 @@ public partial class App : System.Windows.Application
         window.Activate();
     }
 
-    private void ExitApplication()
+    private async Task ExitApplicationAsync()
     {
-        tray?.Dispose();
-        tray = null;
-        (this.MainWindow as LolScout.App.MainWindow)?.CloseForExit();
+        if (shutdownCoordinator is not null) await shutdownCoordinator.StopAsync();
+        (MainWindow as MainWindow)?.CloseForExit();
         Shutdown();
     }
 
-    protected override async void OnExit(ExitEventArgs e)
+    protected override void OnExit(ExitEventArgs e)
     {
-        tray?.Dispose();
-        if (viewModel is not null) await viewModel.DisposeAsync();
-        composition?.Dispose();
+        shutdownCoordinator?.StopAsync().GetAwaiter().GetResult();
         base.OnExit(e);
     }
 }

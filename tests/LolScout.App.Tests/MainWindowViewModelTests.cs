@@ -9,6 +9,46 @@ namespace LolScout.App.Tests;
 public sealed class MainWindowViewModelTests
 {
     [Fact]
+    public void Starts_with_five_waiting_placeholders()
+    {
+        var viewModel = new MainWindowViewModel(null, new RecordingClipboard(), new RecordingDispatcher());
+
+        viewModel.Players.Should().HaveCount(5);
+        viewModel.Players.Should().OnlyContain(card => card.Status == "待识别");
+    }
+
+    [Fact]
+    public async Task Watch_restarts_after_failure_and_later_receives_roster()
+    {
+        var source = new FailsThenRecoversSource(Players());
+        var delays = new List<TimeSpan>();
+        var viewModel = new MainWindowViewModel(source, new RecordingClipboard(), new RecordingDispatcher(),
+            (delay, _) => { delays.Add(delay); return Task.CompletedTask; });
+
+        viewModel.Start();
+        await source.RosterObserved.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await viewModel.DisposeAsync();
+
+        source.Attempts.Should().Be(2);
+        delays.Should().ContainSingle().Which.Should().BeGreaterThan(TimeSpan.Zero);
+        viewModel.Players.Should().OnlyContain(card => card.Status == "查询中");
+        viewModel.LastCommandError.Should().Contain("first watch failed");
+    }
+
+    [Fact]
+    public async Task Shutdown_cancels_retry_backoff_without_escaping()
+    {
+        var enteredDelay = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var viewModel = new MainWindowViewModel(new AlwaysFailingSource(), new RecordingClipboard(), new RecordingDispatcher(),
+            async (_, token) => { enteredDelay.TrySetResult(); await Task.Delay(Timeout.InfiniteTimeSpan, token); });
+        viewModel.Start();
+        await enteredDelay.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        var action = async () => await viewModel.DisposeAsync();
+
+        await action.Should().NotThrowAsync();
+    }
+    [Fact]
     public async Task State_updates_five_cards_independently_and_requests_window_once()
     {
         var dispatcher = new RecordingDispatcher();
@@ -115,5 +155,33 @@ public sealed class MainWindowViewModelTests
     {
         public Task SetTextAsync(string text, CancellationToken cancellationToken = default) =>
             Task.FromException(new InvalidOperationException("clipboard busy"));
+    }
+
+    private sealed class FailsThenRecoversSource(LiveParticipant[] players) : IScoutStateSource
+    {
+        public int Attempts { get; private set; }
+        public TaskCompletionSource RosterObserved { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public async IAsyncEnumerable<ScoutState> WatchAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            Attempts++;
+            if (Attempts == 1) throw new InvalidOperationException("first watch failed");
+            yield return new(ScoutStatus.Querying, players.Select(x => new PlayerScoutState(x)).ToArray(), DateTimeOffset.UtcNow);
+            RosterObserved.TrySetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        }
+        public Task RefreshAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+    }
+
+    private sealed class AlwaysFailingSource : IScoutStateSource
+    {
+        public async IAsyncEnumerable<ScoutState> WatchAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            await Task.Yield();
+            throw new InvalidOperationException("watch failed");
+#pragma warning disable CS0162
+            yield break;
+#pragma warning restore CS0162
+        }
+        public Task RefreshAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
 }

@@ -39,6 +39,27 @@ public sealed class LeagueSessionTests
     }
 
     [Theory]
+    [InlineData(103000, 103)]
+    [InlineData(103027, 103)]
+    public async Task Skin_id_encodes_champion_id_in_thousands(int skinId, int expectedChampionId)
+    {
+        var json = (await Fixture()).Replace("\"championName\":\"Ahri\",\"riotIdGameName\":\"Enemy1\"", $"\"championName\":\"Ahri\",\"skinID\":{skinId},\"riotIdGameName\":\"Enemy1\"");
+        var enemies = await Session(new StubTransport("\"Ally1#TEST\"", json), GamePhase.InGame).GetParticipantsAsync(default);
+        enemies[0].ChampionId.Should().Be(expectedChampionId);
+    }
+
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(999)]
+    [InlineData(1000000)]
+    public async Task Invalid_present_skin_id_is_protocol_change(int skinId)
+    {
+        var json = (await Fixture()).Replace("\"championName\":\"Ahri\",\"riotIdGameName\":\"Enemy1\"", $"\"championName\":\"Ahri\",\"skinID\":{skinId},\"riotIdGameName\":\"Enemy1\"");
+        var act = () => Session(new StubTransport("\"Ally1#TEST\"", json), GamePhase.InGame).GetParticipantsAsync(default);
+        await act.Should().ThrowAsync<ProtocolChangedException>();
+    }
+
+    [Theory]
     [InlineData("UNKNOWN", "Enemy1", "TEST")]
     [InlineData("ORDER", "", "TEST")]
     public async Task Unknown_team_is_protocol_change_but_hidden_identity_is_unavailable(string team, string gameName, string tag)
