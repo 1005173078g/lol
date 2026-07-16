@@ -1,2 +1,5 @@
 .worktrees/
 .superpowers/
+artifacts/probe/
+**/bin/
+**/obj/
