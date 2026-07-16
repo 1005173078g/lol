@@ -32,3 +32,10 @@ The administrator read-only probe reused the production WMI discovery and certif
 - 401/403 map immediately to `WeGameNotSignedInException` without retry.
 - Only connection failures, per-attempt timeout, and 408/429/502/503/504 retry once after 250 ms.
 - Required subtrees and types fail closed as `ProtocolChangedException`; unrelated fields in large LCU objects are ignored.
+
+## Review follow-up
+
+- History parsing now validates `gameCreation` and `queueId` first, skips non-ranked records, and only then strictly parses the ranked participant/stat projection. A queue 400 record without participant data is accepted and skipped; the equivalent queue 420 shape fails closed.
+- `PlayerIdentity` now rejects null/blank game name, tag line, and region with `ArgumentException`, and trims all three components. The adapter also rejects a null/incomplete identity before session discovery or transport use, preventing a `gameName#` request.
+- Caller cancellation is propagated without retry; a focused test verifies exactly one underlying attempt.
+- Ranked records require exactly one participant because the approved CN runtime shape is an LCU single-player projection. Both zero and multiple participants map to `ProtocolChangedException`.

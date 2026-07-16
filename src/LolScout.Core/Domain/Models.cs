@@ -13,10 +13,9 @@ public sealed record PlayerIdentity
 {
     public PlayerIdentity(string gameName, string tagLine, string region)
     {
-        if (string.IsNullOrWhiteSpace(gameName))
-        {
-            throw new ArgumentException("Game name is required.");
-        }
+        if (string.IsNullOrWhiteSpace(gameName)) throw new ArgumentException("Game name is required.", nameof(gameName));
+        if (string.IsNullOrWhiteSpace(tagLine)) throw new ArgumentException("Tag line is required.", nameof(tagLine));
+        if (string.IsNullOrWhiteSpace(region)) throw new ArgumentException("Region is required.", nameof(region));
 
         GameName = gameName.Trim();
         TagLine = tagLine.Trim();

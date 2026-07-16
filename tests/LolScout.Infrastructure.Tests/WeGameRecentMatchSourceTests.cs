@@ -44,6 +44,55 @@ public sealed class WeGameRecentMatchSourceTests
     }
 
     [Fact]
+    public async Task Unranked_record_without_participant_projection_is_skipped()
+    {
+        var history = "{\"games\":{\"games\":[{\"gameCreation\":2,\"queueId\":400},{\"gameCreation\":1,\"queueId\":420,\"participants\":[{\"championId\":1,\"stats\":{\"win\":true,\"kills\":1,\"deaths\":2,\"assists\":3}}]}]}}";
+        var source = new WeGameRecentMatchSource(new StubDiscovery(), new StubTransport(new(200, "{\"puuid\":\"fictional\"}"), new(200, history)));
+        (await source.GetRankedMatchesAsync(new("Fictional", "TAG", "CN"), 20, default)).Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task Ranked_record_without_participant_projection_is_protocol_changed()
+    {
+        var history = "{\"games\":{\"games\":[{\"gameCreation\":1,\"queueId\":420}]}}";
+        var source = new WeGameRecentMatchSource(new StubDiscovery(), new StubTransport(new(200, "{\"puuid\":\"fictional\"}"), new(200, history)));
+        var act = () => source.GetRankedMatchesAsync(new("Fictional", "TAG", "CN"), 20, default);
+        await act.Should().ThrowExactlyAsync<ProtocolChangedException>();
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(2)]
+    public async Task Ranked_record_requires_exactly_one_projected_participant(int count)
+    {
+        var participants = string.Join(',', Enumerable.Repeat("{\"championId\":1,\"stats\":{\"win\":true,\"kills\":1,\"deaths\":2,\"assists\":3}}", count));
+        var history = $"{{\"games\":{{\"games\":[{{\"gameCreation\":1,\"queueId\":420,\"participants\":[{participants}]}}]}}}}";
+        var source = new WeGameRecentMatchSource(new StubDiscovery(), new StubTransport(new(200, "{\"puuid\":\"fictional\"}"), new(200, history)));
+        var act = () => source.GetRankedMatchesAsync(new("Fictional", "TAG", "CN"), 20, default);
+        await act.Should().ThrowExactlyAsync<ProtocolChangedException>();
+    }
+
+    [Fact]
+    public async Task Blank_tag_is_rejected_before_any_request()
+    {
+        var transport = new StubTransport();
+        var source = new WeGameRecentMatchSource(new StubDiscovery(), transport);
+        var act = async () => await source.GetRankedMatchesAsync(new PlayerIdentity("Fictional", " ", "CN"), 20, default);
+        await act.Should().ThrowAsync<ArgumentException>();
+        transport.Requests.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Null_player_is_rejected_by_adapter_before_discovery_or_request()
+    {
+        var transport = new StubTransport();
+        var source = new WeGameRecentMatchSource(new StubDiscovery(), transport);
+        var act = () => source.GetRankedMatchesAsync(null!, 20, default);
+        await act.Should().ThrowExactlyAsync<ArgumentNullException>();
+        transport.Requests.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task Requested_limit_is_capped_at_twenty()
     {
         var games = string.Join(',', Enumerable.Range(1, 25).Select(i => $"{{\"gameCreation\":{i},\"queueId\":420,\"participants\":[{{\"championId\":1,\"stats\":{{\"win\":true,\"kills\":1,\"deaths\":1,\"assists\":1}}}}]}}"));
@@ -79,6 +128,18 @@ public sealed class WeGameRecentMatchSourceTests
         var transport = new WeGameHttpTransport(inner, TimeSpan.FromSeconds(1), (_, _) => Task.CompletedTask);
         var response = await transport.GetAsync(new("https://127.0.0.1:12345/test"), "token".AsMemory(), default);
         response.StatusCode.Should().Be(401);
+        inner.Attempts.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Caller_cancellation_is_propagated_without_retry()
+    {
+        var inner = new TimeoutLeagueTransport();
+        var transport = new WeGameHttpTransport(inner, TimeSpan.FromSeconds(10), (_, _) => Task.CompletedTask);
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        var act = () => transport.GetAsync(new("https://127.0.0.1:12345/test"), "token".AsMemory(), cancellation.Token);
+        await act.Should().ThrowExactlyAsync<TaskCanceledException>();
         inner.Attempts.Should().Be(1);
     }
 
