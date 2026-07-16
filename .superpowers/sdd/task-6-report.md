@@ -46,3 +46,18 @@ Recovered the previous agent's uncommitted work in `LolScout.sln`, `Ports.cs`, `
   - PASS: 10 passed, 0 failed, 0 skipped (107 ms).
 - `dotnet test LolScout.sln -c Release --no-restore`
   - PASS: Core 17/17, Infrastructure 46/46, App 10/10; total 73 passed, 0 failed, 0 skipped.
+
+## Second review remediation
+
+- Removed the per-player check/call TOCTOU. `RunBatchAsync` now holds the single state gate while it validates generation/token, publishes initial `Querying`, and synchronously invokes all five source methods to capture their tasks. Ended/Refresh can therefore observe only an all-not-started or all-started batch boundary. Awaiting and result publication remain outside/through the gate respectively.
+- Added a synchronous first-start barrier test. Ended is requested while the first source invocation holds the gate; it cannot publish until all five tasks have been obtained, then cancels the already-started batch. The test verifies exactly five starts and an empty Ended roster.
+- Replaced `Delay(0)`/`Task.Yield` refresh coalescing with a positive 10 ms `IClock.DelayAsync` debounce. Concurrent refresh generations are created before the controlled fake clock releases debounce; only the latest starts and publishes.
+- Poll failures now complete the active watch channel with the exception. Watch cleanup releases the single-watcher lease in a `finally`, including when polling faults. Phase and participant failure tests verify propagation and successful watcher restart.
+- Expanded fingerprint tests to cover team changes, champion changes, and mixed-team rejection.
+
+### Second review verification
+
+- `dotnet test tests\LolScout.App.Tests\LolScout.App.Tests.csproj --filter MatchScoutCoordinatorTests --no-restore`
+  - PASS: 14 passed, 0 failed, 0 skipped (85 ms).
+- `dotnet test LolScout.sln -c Release --no-restore`
+  - PASS: Core 17/17, Infrastructure 46/46, App 14/14; total 77 passed, 0 failed, 0 skipped.

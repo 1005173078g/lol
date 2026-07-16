@@ -22,6 +22,51 @@ public sealed class MatchScoutCoordinatorTests
     }
 
     [Fact]
+    public void Fingerprint_changes_with_team_or_champion_and_rejects_mixed_teams()
+    {
+        var players = Players();
+        var changedTeam = players.Select(x => x with { TeamId = 201 }).ToArray();
+        var changedChampion = players.Select((x, index) => index == 0 ? x with { ChampionId = 99 } : x).ToArray();
+        var mixedTeams = players.Select((x, index) => index == 0 ? x with { TeamId = 201 } : x).ToArray();
+
+        MatchFingerprint.Create(changedTeam).Should().NotBe(MatchFingerprint.Create(players));
+        MatchFingerprint.Create(changedChampion).Should().NotBe(MatchFingerprint.Create(players));
+        var createMixed = () => MatchFingerprint.Create(mixedTeams);
+        createMixed.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public async Task Phase_failure_terminates_enumeration_and_allows_a_new_watcher()
+    {
+        var sut = new MatchScoutCoordinator(new ThrowOncePhaseSession(), new ImmediateSource(), new FakeClock());
+        await using (var failed = sut.WatchAsync(CancellationToken.None).GetAsyncEnumerator())
+        {
+            var move = async () => await failed.MoveNextAsync();
+            await move.Should().ThrowAsync<InvalidOperationException>().WithMessage("phase failure");
+        }
+
+        await using var restarted = sut.WatchAsync(CancellationToken.None).GetAsyncEnumerator();
+        (await restarted.MoveNextAsync()).Should().BeTrue();
+        restarted.Current.Status.Should().Be(ScoutStatus.Waiting);
+    }
+
+    [Fact]
+    public async Task Participant_failure_terminates_enumeration_and_allows_a_new_watcher()
+    {
+        var sut = new MatchScoutCoordinator(new ThrowOnceParticipantSession(), new ImmediateSource(), new FakeClock());
+        await using (var failed = sut.WatchAsync(CancellationToken.None).GetAsyncEnumerator())
+        {
+            (await failed.MoveNextAsync()).Should().BeTrue();
+            var move = async () => await failed.MoveNextAsync();
+            await move.Should().ThrowAsync<InvalidOperationException>().WithMessage("participant failure");
+        }
+
+        await using var restarted = sut.WatchAsync(CancellationToken.None).GetAsyncEnumerator();
+        (await restarted.MoveNextAsync()).Should().BeTrue();
+        restarted.Current.Status.Should().Be(ScoutStatus.Loading);
+    }
+
+    [Fact]
     public async Task Concurrent_second_watcher_is_rejected_and_a_later_watcher_is_allowed()
     {
         var sut = new MatchScoutCoordinator(new FakeSession(GamePhase.Waiting), new ImmediateSource(), new FakeClock());
@@ -74,7 +119,7 @@ public sealed class MatchScoutCoordinatorTests
         await WaitUntil(() => states.Count(x => x.Status == ScoutStatus.Complete) == 1);
 
         var refreshes = Task.WhenAll(sut.RefreshAsync(), sut.RefreshAsync());
-        await clock.AdvanceAsync(TimeSpan.Zero);
+        await clock.AdvanceAsync(TimeSpan.FromMilliseconds(10));
         await refreshes;
 
         source.Calls.Should().Be(10);
@@ -93,7 +138,7 @@ public sealed class MatchScoutCoordinatorTests
         await source.OldStarted.Task.WaitAsync(TimeSpan.FromSeconds(2)); // Deadlock guard.
 
         var refresh = sut.RefreshAsync();
-        await clock.AdvanceAsync(TimeSpan.Zero);
+        await clock.AdvanceAsync(TimeSpan.FromMilliseconds(10));
         await refresh;
         source.FailOld.TrySetResult();
         await source.OldFinished.Task.WaitAsync(TimeSpan.FromSeconds(2)); // Deadlock guard.
@@ -114,7 +159,7 @@ public sealed class MatchScoutCoordinatorTests
         await source.OldStarted.Task.WaitAsync(TimeSpan.FromSeconds(2)); // Deadlock guard.
 
         var refresh = sut.RefreshAsync();
-        await clock.AdvanceAsync(TimeSpan.Zero);
+        await clock.AdvanceAsync(TimeSpan.FromMilliseconds(10));
         await refresh;
         source.ReleaseOld.TrySetResult();
         await source.OldFinished.Task.WaitAsync(TimeSpan.FromSeconds(2)); // Deadlock guard.
@@ -182,7 +227,7 @@ public sealed class MatchScoutCoordinatorTests
         await source.FirstBatchStarted.Task.WaitAsync(TimeSpan.FromSeconds(2)); // Deadlock guard.
 
         var refresh = sut.RefreshAsync();
-        await clock.AdvanceAsync(TimeSpan.Zero);
+        await clock.AdvanceAsync(TimeSpan.FromMilliseconds(10));
         await refresh;
         await WaitUntil(() => states.Count(x => x.Status == ScoutStatus.Complete) == 1);
         source.ReleaseOld.SetResult();
@@ -220,6 +265,27 @@ public sealed class MatchScoutCoordinatorTests
         stop.Cancel();
     }
 
+    [Fact]
+    public async Task Ended_cannot_interleave_between_generation_check_and_starting_all_requests()
+    {
+        var source = new SynchronousStartBarrierSource();
+        var clock = new FakeClock();
+        var sut = new MatchScoutCoordinator(new FakeSession(GamePhase.Loading, GamePhase.Ended), source, clock);
+        using var stop = new CancellationTokenSource();
+        var states = Collect(sut.WatchAsync(stop.Token), stop.Token);
+        await source.FirstStart.Task.WaitAsync(TimeSpan.FromSeconds(2)); // Deadlock guard.
+
+        var advanceToEnded = clock.AdvanceAsync(TimeSpan.FromMilliseconds(500));
+        states.Should().NotContain(x => x.Status == ScoutStatus.Ended);
+        source.ReleaseFirst.Set();
+        await advanceToEnded;
+        await WaitUntil(() => states.Any(x => x.Status == ScoutStatus.Ended));
+
+        source.Calls.Should().Be(5, "the start boundary is all-or-none while the state gate is held");
+        states.Last(x => x.Status == ScoutStatus.Ended).Players.Should().BeEmpty();
+        stop.Cancel();
+    }
+
     private static ConcurrentQueue<ScoutState> Collect(IAsyncEnumerable<ScoutState> stream, CancellationToken token)
     {
         var result = new ConcurrentQueue<ScoutState>();
@@ -238,6 +304,25 @@ public sealed class MatchScoutCoordinatorTests
         private int index; public int ParticipantCalls { get; private set; }
         public Task<GamePhase> GetPhaseAsync(CancellationToken cancellationToken) => Task.FromResult(phases[Math.Min(index++, phases.Length - 1)]);
         public Task<IReadOnlyList<LiveParticipant>> GetParticipantsAsync(CancellationToken cancellationToken) { ParticipantCalls++; return Task.FromResult<IReadOnlyList<LiveParticipant>>(Players()); }
+    }
+    private sealed class ThrowOncePhaseSession : ILeagueSession
+    {
+        private int calls;
+        public Task<GamePhase> GetPhaseAsync(CancellationToken cancellationToken) =>
+            Interlocked.Increment(ref calls) == 1
+                ? Task.FromException<GamePhase>(new InvalidOperationException("phase failure"))
+                : Task.FromResult(GamePhase.Waiting);
+        public Task<IReadOnlyList<LiveParticipant>> GetParticipantsAsync(CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyList<LiveParticipant>>(Players());
+    }
+    private sealed class ThrowOnceParticipantSession : ILeagueSession
+    {
+        private int calls;
+        public Task<GamePhase> GetPhaseAsync(CancellationToken cancellationToken) => Task.FromResult(GamePhase.Loading);
+        public Task<IReadOnlyList<LiveParticipant>> GetParticipantsAsync(CancellationToken cancellationToken) =>
+            Interlocked.Increment(ref calls) == 1
+                ? Task.FromException<IReadOnlyList<LiveParticipant>>(new InvalidOperationException("participant failure"))
+                : Task.FromResult<IReadOnlyList<LiveParticipant>>(Players());
     }
     private sealed class FakeClock : IClock
     {
@@ -368,6 +453,22 @@ public sealed class MatchScoutCoordinatorTests
                 return [new(true, false, "MID", 1, 1, 1, 1)];
             }
             return [new(true, false, "MID", 1, 1, 1, 1), new(true, false, "MID", 1, 1, 1, 1)];
+        }
+    }
+    private sealed class SynchronousStartBarrierSource : IRecentMatchSource
+    {
+        private int calls;
+        public int Calls => calls;
+        public TaskCompletionSource FirstStart { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public ManualResetEventSlim ReleaseFirst { get; } = new(false);
+        public Task<IReadOnlyList<RecentMatch>> GetRankedMatchesAsync(PlayerIdentity player, int limit, CancellationToken cancellationToken)
+        {
+            if (Interlocked.Increment(ref calls) == 1)
+            {
+                FirstStart.TrySetResult();
+                ReleaseFirst.Wait();
+            }
+            return Task.FromResult<IReadOnlyList<RecentMatch>>([new(true, false, "MID", 1, 1, 1, 1)]);
         }
     }
 }
