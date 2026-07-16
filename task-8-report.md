@@ -37,3 +37,13 @@
 - 对构建用户名 `Administrator` 采用机器路径上下文匹配，因为自包含 .NET runtime 和必须存在的 manifest 自身包含通用权限词 `Administrator`/`requireAdministrator`；README 明确了扫描能力和这一窄例外。
 - README 将 2999 更正为 Riot 开发者文档记录的本地 Live Client Data API，并明确 LCU 为 unsupported/private、无稳定性承诺。CI 去除重复 restore，由同一发布脚本统一还原、测试、manifest 验证与扫描。
 - 复审后最终发布验证：Core 17/17、Infrastructure 59/59、App 29/29，共 105/105 通过；PE manifest XML、单 EXE 结构、源码与 EXE 安全扫描全部通过。
+
+## 最终全分支审查修复
+
+- 删除原始异常的 Trace/UI 泄漏。`SafeErrorReporter` 忽略异常内容，经强类型日志器只写固定 `APP_WATCH_FAILED` / `APP_LIFECYCLE_FAILED` 与安全阶段；监听、生命周期、复制、刷新和玩家查询均显示固定中文，不再使用 `Exception.Message`、stack 或路径。
+- 恶意异常回归测试包含 token、用户路径和 session 文件名，断言安全日志 sink 与 UI 均不包含原值；App 定向测试 10/10 通过。全仓 `Trace`/异常 `.ToString()`/`.Message` 扫描只剩安全 JSON 行的 `TraceError(line)`，没有原始异常输出路径。
+- README 与窗口可见底部新增非 Riot 官方、未获背书、不代表 Riot 观点、商标归属及 LCU unsupported/更新可失效声明；新增 `docs/riot-policy.md`，明确未声称已登记，以及公开分发前必须完成 Developer Portal 产品登记并遵守当时政策。
+- `publish.ps1 -PublicRelease` 要求 `RIOT_PRODUCT_REGISTRATION_CONFIRMED` 精确为 `true`；未确认门禁负测通过。默认模式仍可本地构建。当前 CI 明确为 validation only，已移除 artifact 上传且不创建 Release。
+- Task5 增加非 ASCII/保留字符完整 Riot ID 最终 URI 单次编码测试，以及 250ms 重试退避期间取消、不开始第二次请求测试，定向 2/2 通过。
+- README 构建步骤去除重复 `dotnet test`；`AppComposition.Dispose` 的无资源说明保留。
+- 最终完整发布：Core 17/17、Infrastructure 61/61、App 31/31，共 109/109 通过；单 EXE、PE manifest XML 与安全扫描通过。

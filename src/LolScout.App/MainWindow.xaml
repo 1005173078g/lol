@@ -4,6 +4,9 @@
         Title="联盟一区对手战绩助手" Width="1040" Height="610" MinWidth="820" MinHeight="500"
         Topmost="{Binding IsTopmost}">
   <DockPanel Margin="20">
+    <TextBlock DockPanel.Dock="Bottom" Margin="0,12,0,0" TextAlignment="Center" TextWrapping="Wrap"
+               Foreground="#70809D" FontSize="11"
+               Text="本工具非 Riot 官方产品、未获 Riot 背书且不代表 Riot 观点；Riot 及相关商标归其所有。LCU 为不受支持的私有接口，更新可能导致失效。" />
     <Border DockPanel.Dock="Top" Background="#172033" CornerRadius="8" Padding="16" Margin="0,0,0,16">
       <StackPanel Orientation="Horizontal">
         <TextBlock Text="运行状态：" Foreground="#AFC4E8" FontSize="16" />

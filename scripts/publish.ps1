@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param()
+param([switch] $PublicRelease)
 
 $ErrorActionPreference = 'Stop'
 $root = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
@@ -9,6 +9,10 @@ $sourceManifest = Join-Path $root 'src\LolScout.App\app.manifest'
 $output = Join-Path $root 'artifacts\publish\win-x64'
 $exe = Join-Path $output 'LolScout.App.exe'
 $sdkToolsVersion = '10.0.28000.2270'
+
+if ($PublicRelease -and $env:RIOT_PRODUCT_REGISTRATION_CONFIRMED -cne 'true') {
+    throw 'Public release is blocked: set RIOT_PRODUCT_REGISTRATION_CONFIRMED=true only after confirming current Riot Developer Portal product registration and policy compliance.'
+}
 
 function Invoke-DotNet([string[]] $Arguments) {
     & dotnet @Arguments

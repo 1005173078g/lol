@@ -1,4 +1,4 @@
-name: Windows build
+name: Windows validation only (no publication)
 
 on:
   push:
@@ -15,9 +15,3 @@ jobs:
       - name: Test and publish
         shell: powershell
         run: .\scripts\publish.ps1
-      - name: Upload Windows x64 single-file build
-        uses: actions/upload-artifact@v4
-        with:
-          name: LolScout-win-x64
-          path: artifacts/publish/win-x64/LolScout.App.exe
-          if-no-files-found: error

@@ -18,6 +18,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
     private bool rosterSeen;
     private Task? watchTask;
     private readonly Func<TimeSpan, CancellationToken, Task> retryDelay;
+    private readonly Action<Exception>? reportWatchFailure;
     private int disposed;
 
     [ObservableProperty] private string statusText = "等待客户端";
@@ -27,12 +28,13 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
     [ObservableProperty] private bool shouldShowWindow;
 
     public MainWindowViewModel(IScoutStateSource? coordinator, IClipboardService clipboard, IUiDispatcher dispatcher,
-        Func<TimeSpan, CancellationToken, Task>? retryDelay = null)
+        Func<TimeSpan, CancellationToken, Task>? retryDelay = null, Action<Exception>? reportWatchFailure = null)
     {
         this.coordinator = coordinator;
         this.clipboard = clipboard ?? throw new ArgumentNullException(nameof(clipboard));
         this.dispatcher = dispatcher ?? throw new ArgumentNullException(nameof(dispatcher));
         this.retryDelay = retryDelay ?? Task.Delay;
+        this.reportWatchFailure = reportWatchFailure;
         for (var index = 0; index < 5; index++) Players.Add(new());
         CopyBroadcastCommand = new AsyncRelayCommand(CopyBroadcastAsync);
         RefreshCommand = new AsyncRelayCommand(RefreshAsync);
@@ -63,7 +65,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
 
     public Task ReportLifecycleErrorAsync(Exception exception) => dispatcher.InvokeAsync(() =>
     {
-        LastCommandError = exception.Message;
+        LastCommandError = "应用清理失败";
         OperationStatus = "退出清理遇到错误";
     });
 
@@ -89,10 +91,11 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { break; }
             catch (Exception exception)
             {
+                reportWatchFailure?.Invoke(exception);
                 await dispatcher.InvokeAsync(() =>
                 {
-                    LastCommandError = exception.Message;
-                    OperationStatus = "监控暂时中断，正在重试";
+                    LastCommandError = "监听失败";
+                    OperationStatus = "监听失败，正在重试";
                 }).ConfigureAwait(false);
                 try { await retryDelay(WatchRetryBackoff, cancellationToken).ConfigureAwait(false); }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { break; }
@@ -130,9 +133,9 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
             LastCommandError = null;
             OperationStatus = "播报已复制";
         }
-        catch (Exception exception)
+        catch (Exception)
         {
-            LastCommandError = exception.Message;
+            LastCommandError = "复制失败";
             OperationStatus = "复制失败，请重试";
         }
     }
@@ -146,9 +149,9 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
             LastCommandError = null;
             OperationStatus = "已重新查询";
         }
-        catch (Exception exception)
+        catch (Exception)
         {
-            LastCommandError = exception.Message;
+            LastCommandError = "重新查询失败";
             OperationStatus = "重新查询失败，请重试";
         }
     }

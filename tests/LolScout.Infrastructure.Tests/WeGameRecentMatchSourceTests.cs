@@ -102,6 +102,19 @@ public sealed class WeGameRecentMatchSourceTests
     }
 
     [Fact]
+    public async Task Full_riot_id_with_non_ascii_and_reserved_characters_is_encoded_once_in_final_uri()
+    {
+        var transport = new StubTransport(new(200, "{\"puuid\":\"fictional\"}"), new(200, "{\"games\":{\"games\":[]}}"));
+        var source = new WeGameRecentMatchSource(new StubDiscovery(), transport);
+        var player = new PlayerIdentity("玩家 名+", "标 签/?", "CN");
+
+        await source.GetRankedMatchesAsync(player, 20, default);
+
+        var encoded = Uri.EscapeDataString($"{player.GameName}#{player.TagLine}");
+        transport.Requests[0].OriginalString.Should().EndWith($"?name={encoded}");
+    }
+
+    [Fact]
     public async Task Retriable_status_is_retried_once()
     {
         var inner = new StubLeagueTransport(new HttpRequestException("temporary", null, System.Net.HttpStatusCode.ServiceUnavailable), "{}");
@@ -140,6 +153,27 @@ public sealed class WeGameRecentMatchSourceTests
         cancellation.Cancel();
         var act = () => transport.GetAsync(new("https://127.0.0.1:12345/test"), "token".AsMemory(), cancellation.Token);
         await act.Should().ThrowExactlyAsync<TaskCanceledException>();
+        inner.Attempts.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Caller_cancellation_during_retry_backoff_starts_no_second_attempt()
+    {
+        var inner = new StubLeagueTransport(new HttpRequestException("temporary", null, System.Net.HttpStatusCode.ServiceUnavailable));
+        var delayStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var transport = new WeGameHttpTransport(inner, TimeSpan.FromSeconds(1), async (delay, token) =>
+        {
+            delay.Should().Be(TimeSpan.FromMilliseconds(250));
+            delayStarted.TrySetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, token);
+        });
+        using var cancellation = new CancellationTokenSource();
+
+        var request = transport.GetAsync(new("https://127.0.0.1:12345/test"), "token".AsMemory(), cancellation.Token);
+        await delayStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        cancellation.Cancel();
+
+        await FluentActions.Awaiting(() => request).Should().ThrowExactlyAsync<TaskCanceledException>();
         inner.Attempts.Should().Be(1);
     }
 

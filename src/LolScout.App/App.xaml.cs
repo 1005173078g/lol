@@ -14,8 +14,10 @@ public partial class App : System.Windows.Application
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+        var errors = new SafeErrorReporter(line => System.Diagnostics.Trace.TraceError(line));
         composition = AppComposition.Create();
-        viewModel = new(composition.Coordinator, new ClipboardService(), new WpfUiDispatcher(Dispatcher));
+        viewModel = new(composition.Coordinator, new ClipboardService(), new WpfUiDispatcher(Dispatcher),
+            reportWatchFailure: errors.ReportWatchFailure);
         var window = new MainWindow(viewModel);
         MainWindow = window;
         tray = new TrayIconService(
@@ -34,7 +36,7 @@ public partial class App : System.Windows.Application
             }).Task,
             async error =>
             {
-                System.Diagnostics.Trace.TraceError(error.ToString());
+                errors.ReportLifecycleFailure(error);
                 if (!Dispatcher.HasShutdownStarted) await viewModel.ReportLifecycleErrorAsync(error);
             });
         viewModel.Start();

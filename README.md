@@ -2,6 +2,8 @@
 
 这是一个 Windows 桌面辅助工具：在英雄联盟进入加载/游戏阶段后读取 Riot 开发者文档记录的本地 Live Client Data API 所提供的敌方身份，再查询近期战绩并逐张更新对手卡片。程序只展示信息和复制精简播报，**不会自动发送游戏聊天**。
 
+> 本工具不是 Riot Games 官方产品，未获得 Riot Games 背书，也不代表 Riot Games 或其相关方的观点。Riot Games、League of Legends 及相关商标归其各自权利人所有。
+
 ## 使用条件
 
 - Windows x64；程序清单要求以管理员身份运行，启动时会出现 UAC 提示。
@@ -21,12 +23,17 @@
 
 程序使用本机客户端接口，不记录 Authorization、Cookie、token、会话文件、真实玩家 ID、完整响应或本机路径。诊断日志对字段名和值同时做白名单、类型、格式和范围校验，仅允许时间、阶段、错误码、HTTP 状态、缺失字段名和耗时。发布扫描能检查明确列出的凭据赋值、路径、测试/探测标记和 ASCII/UTF-16 可打印字符串，但不能证明任意编码或加密数据绝对不存在；当构建用户名为 Windows 保留术语 `Administrator` 时，只在用户路径等机器特定上下文中匹配，以免将 .NET 运行库的通用权限术语误判为泄漏。客户端更新可能改变 unsupported/private LCU 接口形状；遇到问题请参考 [排障文档](docs/troubleshooting.md)。
 
+## Riot 政策与公开分发
+
+本仓库不声称已经完成 Riot 产品登记。LCU 是 unsupported/private 接口，客户端更新可随时使功能失效。维护者在公开分发或发布任何二进制前，必须先在 Riot Developer Portal 登记产品，并重新核对、遵守当时有效的 Riot 开发者政策。详见 [Riot 政策与发布门禁](docs/riot-policy.md)。
+
+普通 `publish.ps1` 只生成本地产物。公开发布流程必须使用 `-PublicRelease`，并且只有在维护者实际确认登记与当前政策合规后，才可把仓库变量或环境变量 `RIOT_PRODUCT_REGISTRATION_CONFIRMED` 设为精确的小写 `true`。当前 GitHub Actions 仅验证构建，不上传 artifact，也不创建 GitHub Release。
+
 ## 构建与发布
 
 需要 .NET 8 SDK。在仓库根目录运行：
 
 ```powershell
-dotnet test LolScout.sln -c Release
 powershell -ExecutionPolicy Bypass -File scripts/publish.ps1
 ```
 

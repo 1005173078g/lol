@@ -32,7 +32,8 @@ public sealed class MainWindowViewModelTests
         source.Attempts.Should().Be(2);
         delays.Should().ContainSingle().Which.Should().BeGreaterThan(TimeSpan.Zero);
         viewModel.Players.Should().OnlyContain(card => card.Status == "查询中");
-        viewModel.LastCommandError.Should().Contain("first watch failed");
+        viewModel.LastCommandError.Should().Be("监听失败");
+        viewModel.OperationStatus.Should().Be("监听失败，正在重试");
     }
 
     [Fact]
@@ -105,6 +106,18 @@ public sealed class MainWindowViewModelTests
         await action.Should().NotThrowAsync();
         viewModel.OperationStatus.Should().Be("复制失败，请重试");
         viewModel.LastCommandError.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task Lifecycle_error_never_exposes_exception_message_in_ui()
+    {
+        var viewModel = new MainWindowViewModel(null, new RecordingClipboard(), new RecordingDispatcher());
+
+        await viewModel.ReportLifecycleErrorAsync(new InvalidOperationException(@"token=real-secret C:\Users\Alice"));
+
+        viewModel.LastCommandError.Should().Be("应用清理失败");
+        viewModel.OperationStatus.Should().Be("退出清理遇到错误");
+        (viewModel.LastCommandError + viewModel.OperationStatus).Should().NotContainAny("real-secret", "Alice", "token");
     }
 
     [Fact]

@@ -217,7 +217,7 @@ public sealed class MatchScoutCoordinator : IScoutStateSource
             result = new(participant, PlayerAnalyzer.Analyze(history, participant.ChampionId));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-        catch (Exception exception) { result = new(participant, Error: exception.Message); }
+        catch (Exception) { result = new(participant, Error: "查询失败"); }
 
         await stateGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
         try
