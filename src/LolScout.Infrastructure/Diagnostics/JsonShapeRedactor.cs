@@ -1,19 +1,44 @@
 using System.Text.Json;
-using System.Text.RegularExpressions;
 
 namespace LolScout.Infrastructure.Diagnostics;
 
-public static partial class JsonShapeRedactor
+public static class JsonShapeRedactor
 {
+    private static readonly HashSet<string> SafeProtocolFieldNames = new(StringComparer.Ordinal)
+    {
+        "actions",
+        "assists",
+        "championId",
+        "championName",
+        "count",
+        "deaths",
+        "empty",
+        "gameName",
+        "games",
+        "isMvp",
+        "items",
+        "kills",
+        "matches",
+        "myTeam",
+        "participants",
+        "phase",
+        "players",
+        "position",
+        "puuid",
+        "queueType",
+        "summonerId",
+        "tagLine",
+        "teamId",
+        "theirTeam",
+        "visible",
+        "win"
+    };
+
     public static object Describe(JsonElement element) => DescribeElement(element);
 
     private static object DescribeElement(JsonElement element) => element.ValueKind switch
     {
-        JsonValueKind.Object => element.EnumerateObject().ToDictionary(
-            property => property.Name,
-            property => SensitiveFieldName().IsMatch(property.Name)
-                ? (object)"redacted-field"
-                : DescribeElement(property.Value)),
+        JsonValueKind.Object => DescribeObject(element),
         JsonValueKind.Array => DescribeArray(element),
         JsonValueKind.String => "string",
         JsonValueKind.Number => "number",
@@ -21,6 +46,27 @@ public static partial class JsonShapeRedactor
         JsonValueKind.Null => "null",
         _ => "undefined"
     };
+
+    private static object DescribeObject(JsonElement element)
+    {
+        var result = new Dictionary<string, object?>();
+        var anonymousIndex = 0;
+
+        foreach (var property in element.EnumerateObject())
+        {
+            var isSafeUniqueName = SafeProtocolFieldNames.Contains(property.Name) && !result.ContainsKey(property.Name);
+            if (isSafeUniqueName)
+            {
+                result[property.Name] = DescribeElement(property.Value);
+                continue;
+            }
+
+            var anonymousName = $"redacted-field-{++anonymousIndex}";
+            result[anonymousName] = "redacted-field";
+        }
+
+        return result;
+    }
 
     private static object DescribeArray(JsonElement element)
     {
@@ -32,7 +78,4 @@ public static partial class JsonShapeRedactor
             ["item"] = length == 0 ? null : DescribeElement(element[0])
         };
     }
-
-    [GeneratedRegex("token|cookie|authorization|ticket|session", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
-    private static partial Regex SensitiveFieldName();
 }

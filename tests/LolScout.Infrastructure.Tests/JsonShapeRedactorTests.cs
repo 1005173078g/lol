@@ -30,16 +30,39 @@ public sealed class JsonShapeRedactorTests
     }
 
     [Theory]
-    [InlineData("cookie")]
+    [InlineData("real-player")]
+    [InlineData("123456789012345678")]
+    [InlineData("secret123.token-material")]
     [InlineData("Authorization")]
-    [InlineData("matchTicket")]
-    [InlineData("sessionId")]
-    public void Describe_redacts_sensitive_field_names_case_insensitively(string fieldName)
+    public void Describe_anonymizes_unknown_dynamic_and_sensitive_field_names(string fieldName)
     {
         using var doc = JsonDocument.Parse($"{{\"{fieldName}\":{{\"nested\":\"value\"}}}}");
 
         var description = JsonSerializer.Serialize(JsonShapeRedactor.Describe(doc.RootElement));
 
-        description.Should().Contain(fieldName).And.Contain("redacted-field").And.NotContain("nested");
+        description.Should().Contain("redacted-field-1").And.NotContain(fieldName).And.NotContain("value");
+    }
+
+    [Fact]
+    public void Describe_anonymizes_dynamic_keys_in_nested_objects_and_arrays()
+    {
+        using var doc = JsonDocument.Parse("""{"players":[{"real-player":{"123456789012345678":"token-material"}}]}""");
+
+        var description = JsonSerializer.Serialize(JsonShapeRedactor.Describe(doc.RootElement));
+
+        description.Should().Contain("players").And.Contain("redacted-field-1")
+            .And.NotContain("real-player").And.NotContain("123456789012345678").And.NotContain("token-material");
+    }
+
+    [Fact]
+    public void Describe_handles_duplicate_properties_deterministically()
+    {
+        using var doc = JsonDocument.Parse("""{"players":[],"players":[{"name":"hidden"}],"dynamic":1,"dynamic":2}""");
+
+        var first = JsonSerializer.Serialize(JsonShapeRedactor.Describe(doc.RootElement));
+        var second = JsonSerializer.Serialize(JsonShapeRedactor.Describe(doc.RootElement));
+
+        first.Should().Be(second).And.Contain("players").And.Contain("redacted-field-1")
+            .And.Contain("redacted-field-2").And.Contain("redacted-field-3").And.NotContain("dynamic").And.NotContain("hidden");
     }
 }
