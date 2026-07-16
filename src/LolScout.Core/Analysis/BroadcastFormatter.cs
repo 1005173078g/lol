@@ -12,7 +12,7 @@ public static class BroadcastFormatter
     {
         ArgumentNullException.ThrowIfNull(players);
 
-        if (maxLength <= 0)
+        if (maxLength < Disclaimer.Length)
         {
             return string.Empty;
         }
@@ -47,7 +47,7 @@ public static class BroadcastFormatter
             return text;
         }
 
-        return Disclaimer[..Math.Min(maxLength, Disclaimer.Length)];
+        return string.Empty;
     }
 
     private static string Render(IReadOnlyList<PlayerCard> cards)
@@ -71,7 +71,7 @@ public static class BroadcastFormatter
             Analysis = analysis;
             ShowChampionWinRate = analysis.ChampionMatchCount >= 3 && analysis.ChampionWinRate is not null;
             ShowOverallWinRate = analysis.MatchCount > 0;
-            ShowMvp = analysis.MvpRate is not null;
+            ShowMvp = true;
             ShowPosition = !string.IsNullOrWhiteSpace(analysis.PrimaryPosition);
         }
 
@@ -106,7 +106,9 @@ public static class BroadcastFormatter
 
             if (ShowMvp)
             {
-                fields.Add($"MVP{Percentage(Analysis.MvpRate!.Value)}");
+                fields.Add(Analysis.MvpRate is null
+                    ? "MVP不可用"
+                    : $"MVP{Percentage(Analysis.MvpRate.Value)}");
             }
 
             if (ShowPosition)

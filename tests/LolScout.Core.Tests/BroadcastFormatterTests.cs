@@ -40,6 +40,24 @@ public sealed class BroadcastFormatterTests
     }
 
     [Fact]
+    public void Format_marks_mvp_as_unavailable_when_the_source_flag_is_missing()
+    {
+        var item = AnalysisFor("甲");
+        var analysis = item.Analysis with { MvpRate = null };
+
+        var text = BroadcastFormatter.Format([(item.Participant, analysis)], 180);
+
+        text.Should().Contain("MVP不可用");
+    }
+
+    [Fact]
+    public void Format_returns_empty_instead_of_a_partial_disclaimer_when_limit_is_too_small()
+    {
+        BroadcastFormatter.Format([], 3).Should().BeEmpty();
+        BroadcastFormatter.Format([], 4).Should().Be("仅供参考");
+    }
+
+    [Fact]
     public void Format_removes_lower_priority_fields_first_when_constrained()
     {
         var text = BroadcastFormatter.Format([AnalysisFor("甲")], 40);
