@@ -53,7 +53,9 @@ public sealed class LeagueClientDiscovery(IProcessCommandLineSource processSourc
         var marker = name + "="; var start = commandLine.IndexOf(marker, StringComparison.Ordinal);
         if (start < 0) return null; start += marker.Length;
         var quoted = start < commandLine.Length && commandLine[start] == '"'; if (quoted) start++;
-        var end = quoted ? commandLine.IndexOf('"', start) : commandLine.IndexOf(' ', start);
-        return quoted && end < 0 ? null : commandLine[start..(end < 0 ? commandLine.Length : end)];
+        var end = start;
+        while (end < commandLine.Length && commandLine[end] != '"' && !char.IsWhiteSpace(commandLine[end])) end++;
+        if (quoted && (end >= commandLine.Length || commandLine[end] != '"')) return null;
+        return commandLine[start..end];
     }
 }

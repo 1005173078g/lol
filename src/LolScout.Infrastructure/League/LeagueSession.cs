@@ -100,10 +100,19 @@ public sealed class LeagueHttpTransport : ILeagueHttpTransport
     {
         byte[] expected; try { expected = Convert.FromHexString(pin); } catch (FormatException) { return false; }
         if (expected.Length != 32) return false;
+        var checks = CheckCertificate(certificate, now, expected);
+        return checks.Fingerprint && checks.Subject && checks.Issuer && checks.Validity;
+    }
+    public static CertificatePinChecks CheckCertificate(X509Certificate2 certificate, DateTimeOffset now)
+        => CheckCertificate(certificate, now, Convert.FromHexString(Pin));
+    private static CertificatePinChecks CheckCertificate(X509Certificate2 certificate, DateTimeOffset now, byte[] expected)
+    {
         var actual = SHA256.HashData(certificate.RawData);
-        return expected.Length == actual.Length && CryptographicOperations.FixedTimeEquals(expected, actual)
-            && certificate.GetNameInfo(X509NameType.SimpleName, false) == "rclient"
-            && certificate.GetNameInfo(X509NameType.SimpleName, true).Contains("Riot Games", StringComparison.Ordinal)
-            && now.UtcDateTime >= certificate.NotBefore.ToUniversalTime() && now.UtcDateTime <= certificate.NotAfter.ToUniversalTime();
+        return new(expected.Length == actual.Length && CryptographicOperations.FixedTimeEquals(expected, actual),
+            certificate.GetNameInfo(X509NameType.SimpleName, false) == "rclient",
+            certificate.Issuer.Contains("Riot Games", StringComparison.Ordinal),
+            now.UtcDateTime >= certificate.NotBefore.ToUniversalTime() && now.UtcDateTime <= certificate.NotAfter.ToUniversalTime());
     }
 }
+
+public sealed record CertificatePinChecks(bool Fingerprint, bool Subject, bool Issuer, bool Validity);

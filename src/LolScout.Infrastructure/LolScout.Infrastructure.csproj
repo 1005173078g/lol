@@ -3,4 +3,7 @@
     <ProjectReference Include="..\LolScout.Core\LolScout.Core.csproj" />
     <PackageReference Include="System.Management" Version="8.0.0" />
   </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="LolScout.Probe" />
+  </ItemGroup>
 </Project>

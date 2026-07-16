@@ -109,6 +109,15 @@ public sealed class LeagueSessionTests
     }
 
     [Fact]
+    public void Quoted_wmi_connection_arguments_are_parsed()
+    {
+        var process = new LeagueClientProcess("LeagueClientUx.exe", "LeagueClientUx.exe \"--app-port=54321\" \"--remoting-auth-token=fictional-secret\"");
+        using var connection = new LeagueClientDiscovery(new StubProcesses(process)).Discover();
+        connection.Port.Should().Be(54321);
+        connection.ToString().Should().NotContain("fictional-secret");
+    }
+
+    [Fact]
     public async Task Certificate_failure_maps_to_stable_public_exception()
     {
         var transport = new LeagueHttpTransport(new StubHandlerFactory(
@@ -135,6 +144,19 @@ public sealed class LeagueSessionTests
         var request = new CertificateRequest("CN=rclient", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
         using var cert = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
         LeagueHttpTransport.IsPinnedCertificate(cert, DateTimeOffset.UtcNow, "00").Should().BeFalse();
+    }
+
+    [Fact]
+    public void Issuer_organization_in_full_distinguished_name_is_recognized()
+    {
+        using var issuerKey = RSA.Create(2048);
+        var issuerRequest = new CertificateRequest("O=Riot Games", issuerKey, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        issuerRequest.CertificateExtensions.Add(new X509BasicConstraintsExtension(true, false, 0, true));
+        using var issuer = issuerRequest.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
+        using var leafKey = RSA.Create(2048);
+        var leafRequest = new CertificateRequest("CN=rclient", leafKey, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        using var leaf = leafRequest.Create(issuer, DateTimeOffset.UtcNow.AddHours(-1), DateTimeOffset.UtcNow.AddHours(1), [1, 2, 3, 4]);
+        LeagueHttpTransport.CheckCertificate(leaf, DateTimeOffset.UtcNow).Issuer.Should().BeTrue();
     }
 
     [Fact]
