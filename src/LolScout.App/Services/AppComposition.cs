@@ -29,6 +29,8 @@ public sealed class AppComposition : IDisposable
         return new(new MatchScoutCoordinator(trackedLeague, history, new SystemClock()));
     }
 
+    // The composition owns no disposable resources: both HTTP transports create
+    // short-lived request objects and the coordinator only owns cancellation state.
     public void Dispose() { }
 
     private sealed class PhaseTrackingLeagueSession(ILeagueSession inner, Action<GamePhase> update) : ILeagueSession

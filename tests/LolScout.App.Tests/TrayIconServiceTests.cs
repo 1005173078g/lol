@@ -18,6 +18,18 @@ public sealed class TrayIconServiceTests
     }
 
     [Fact]
+    public void Constructor_failure_disposes_menu_even_when_icon_disposal_throws()
+    {
+        var factory = new ConfigureFailureFactory();
+
+        var act = () => new TrayIconService(() => { }, () => { }, () => Task.CompletedTask, factory);
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("configure failed");
+        factory.Icon.DisposeCalls.Should().Be(1);
+        factory.Menu.DisposeCount.Should().Be(1);
+    }
+
+    [Fact]
     public void Dispose_attempts_hide_icon_and_menu_even_when_each_throws()
     {
         var factory = new DisposalFailureFactory();
@@ -68,6 +80,22 @@ public sealed class TrayIconServiceTests
         public ThrowingIcon Icon { get; } = new();
         public ITrayMenu CreateMenu() => Menu;
         public ITrayIcon CreateIcon() => Icon;
+    }
+
+    private sealed class ConfigureFailureFactory : ITrayPlatformFactory
+    {
+        public RecordingMenu Menu { get; } = new();
+        public ConfigureFailureIcon Icon { get; } = new();
+        public ITrayMenu CreateMenu() => Menu;
+        public ITrayIcon CreateIcon() => Icon;
+    }
+
+    private sealed class ConfigureFailureIcon : ITrayIcon
+    {
+        public int DisposeCalls { get; private set; }
+        public void Configure(object menu, Action show) => throw new InvalidOperationException("configure failed");
+        public void Hide() { }
+        public void Dispose() { DisposeCalls++; throw new InvalidOperationException("dispose failed"); }
     }
 
     private sealed class CapturingFactory : ITrayPlatformFactory

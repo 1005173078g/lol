@@ -121,6 +121,7 @@ public sealed class MatchScoutCoordinatorTests
         var refreshes = Task.WhenAll(sut.RefreshAsync(), sut.RefreshAsync());
         await clock.AdvanceAsync(TimeSpan.FromMilliseconds(10));
         await refreshes;
+        await WaitUntil(() => states.Count(x => x.Status == ScoutStatus.Complete) == 2);
 
         source.Calls.Should().Be(10);
         states.Count(x => x.Status == ScoutStatus.Complete).Should().Be(2);

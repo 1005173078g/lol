@@ -65,8 +65,13 @@ public sealed class TrayIconService : IDisposable
         }
         catch
         {
-            createdIcon?.Dispose();
-            createdMenu?.Dispose();
+            try { createdIcon?.Dispose(); }
+            catch { }
+            finally
+            {
+                try { createdMenu?.Dispose(); }
+                catch { }
+            }
             throw;
         }
     }

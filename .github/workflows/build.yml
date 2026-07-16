@@ -1,0 +1,25 @@
+name: Windows build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test-and-publish:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Restore
+        run: dotnet restore LolScout.sln
+      - name: Test and publish
+        shell: powershell
+        run: .\scripts\publish.ps1
+      - name: Upload Windows x64 single-file build
+        uses: actions/upload-artifact@v4
+        with:
+          name: LolScout-win-x64
+          path: artifacts/publish/win-x64/LolScout.App.exe
+          if-no-files-found: error

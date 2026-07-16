@@ -1,5 +1,12 @@
 .worktrees/
 .superpowers/
-artifacts/probe/
+artifacts/
+*.log
+*.dmp
 **/bin/
 **/obj/
+*.session
+*.session.json
+*.token
+*.ticket
+local-session.*
