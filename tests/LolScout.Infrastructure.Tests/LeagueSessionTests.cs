@@ -38,6 +38,20 @@ public sealed class LeagueSessionTests
         enemies[0].Should().Be(new LiveParticipant(new PlayerIdentity("Enemy1", "TEST", "CN1"), 200, 103, "Ahri"));
     }
 
+    [Fact]
+    public async Task Current_skin_name_fields_are_accepted_without_relaxing_unknown_field_validation()
+    {
+        var json = (await Fixture()).Replace(
+            "\"rawChampionName\":\"game_character_displayname_Annie\"",
+            "\"rawChampionName\":\"game_character_displayname_Annie\",\"rawSkinName\":\"game_character_skin_displayname_Annie_0\",\"skinName\":\"Annie\"",
+            StringComparison.Ordinal);
+
+        var enemies = await Session(new StubTransport("\"Ally1#TEST\"", json), GamePhase.InGame)
+            .GetParticipantsAsync(default);
+
+        enemies.Should().HaveCount(5);
+    }
+
     [Theory]
     [InlineData(103000, 103)]
     [InlineData(103027, 103)]

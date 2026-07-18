@@ -15,10 +15,12 @@ internal sealed class LiveClientPlayerDto
     [JsonPropertyName("level")] public int? Level { get; init; }
     [JsonPropertyName("position")] public string? Position { get; init; }
     [JsonPropertyName("rawChampionName")] public string? RawChampionName { get; init; }
+    [JsonPropertyName("rawSkinName")] public string? RawSkinName { get; init; }
     [JsonPropertyName("respawnTimer")] public double? RespawnTimer { get; init; }
     [JsonPropertyName("runes")] public JsonElement? Runes { get; init; }
     [JsonPropertyName("scores")] public JsonElement? Scores { get; init; }
     [JsonPropertyName("skinID")] public int? SkinId { get; init; }
+    [JsonPropertyName("skinName")] public string? SkinName { get; init; }
     [JsonPropertyName("summonerName")] public string? SummonerName { get; init; }
     [JsonPropertyName("riotId")] public string? RiotId { get; init; }
     [JsonPropertyName("summonerSpells")] public JsonElement? SummonerSpells { get; init; }

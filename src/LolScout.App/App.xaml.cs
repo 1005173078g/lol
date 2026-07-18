@@ -39,6 +39,7 @@ public partial class App : System.Windows.Application
                 errors.ReportLifecycleFailure(error);
                 if (!Dispatcher.HasShutdownStarted) await viewModel.ReportLifecycleErrorAsync(error);
             });
+        if (StartupWindowPolicy.ShouldShowOnStartup()) ShowMainWindow(window);
         viewModel.Start();
     }
 
@@ -59,4 +60,9 @@ public partial class App : System.Windows.Application
         shutdownCoordinator?.StopFallback();
         base.OnExit(e);
     }
+}
+
+internal static class StartupWindowPolicy
+{
+    internal static bool ShouldShowOnStartup() => true;
 }
