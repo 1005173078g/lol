@@ -36,29 +36,45 @@ public sealed class LeagueSession(LeagueClientDiscovery discovery, ILeagueHttpTr
         try { activeId = JsonSerializer.Deserialize<string>(active); players = JsonSerializer.Deserialize<LiveClientPlayerDto[]>(list, StrictJson); }
         catch (JsonException ex) { throw new ProtocolChangedException("Unknown official Live Client response.", ex); }
         if (players is null || players.Length != 10 || string.IsNullOrWhiteSpace(activeId)) throw new ParticipantsUnavailableException();
-        if (players.Any(p => p.Team is null || p.ChampionName is null || p.RiotIdGameName is null || p.RiotIdTagLine is null)) throw new ProtocolChangedException("Required player fields are missing.");
+        if (players.Any(p => p.Team is null || p.ChampionName is null)) throw new ProtocolChangedException("Required player fields are missing.");
         if (players.Any(p => p.Team is not ("ORDER" or "CHAOS"))) throw new ProtocolChangedException("Unknown player team value.");
-        if (players.Any(p => string.IsNullOrWhiteSpace(p.RiotIdGameName) || string.IsNullOrWhiteSpace(p.RiotIdTagLine))) throw new ParticipantsUnavailableException();
-        if (players.Select(p => $"{p.RiotIdGameName}#{p.RiotIdTagLine}").Distinct(StringComparer.OrdinalIgnoreCase).Count() != 10) throw new ProtocolChangedException("Player identities are duplicated.");
-        var own = players.SingleOrDefault(p => string.Equals($"{p.RiotIdGameName}#{p.RiotIdTagLine}", activeId, StringComparison.OrdinalIgnoreCase)) ?? throw new ParticipantsUnavailableException();
+        var own = players.SingleOrDefault(p => MatchesActiveIdentity(p, activeId)) ?? throw new ParticipantsUnavailableException();
         var enemies = players.Where(p => p.Team != own.Team).ToArray();
         if (players.Count(p => p.Team == own.Team) != 5 || enemies.Length != 5) throw new ParticipantsUnavailableException();
+        var visibleIds = enemies.Where(p => !IsAnonymous(p)).Select(p => $"{p.RiotIdGameName}#{p.RiotIdTagLine}").ToArray();
+        if (visibleIds.Distinct(StringComparer.OrdinalIgnoreCase).Count() != visibleIds.Length) throw new ProtocolChangedException("Player identities are duplicated.");
         var result = new List<LiveParticipant>(5);
         foreach (var p in enemies)
         {
             int id;
             if (p.SkinId is { } skinId)
             {
-                id = skinId / 1000;
-                if (skinId <= 0 || id is <= 0 or > 999)
-                    throw new ProtocolChangedException("skinID does not encode a valid champion id.");
+                if (skinId >= 1000) id = skinId / 1000;
+                else if (skinId > 0 && champions.TryGetId(p.ChampionName!, out var catalogId) && catalogId == skinId) id = skinId;
+                else if (skinId == 0 && champions.TryGetId(p.ChampionName!, out catalogId)) id = catalogId;
+                else throw new ProtocolChangedException("skinID does not encode a valid champion id.");
+                if (id is <= 0 or > 999) throw new ProtocolChangedException("skinID does not encode a valid champion id.");
             }
             else if (!champions.TryGetId(p.ChampionName!, out id) || id <= 0)
                 throw new ProtocolChangedException("Champion name is not in the official catalog.");
-            result.Add(new(new(p.RiotIdGameName!, p.RiotIdTagLine!, region), p.Team == "ORDER" ? 100 : 200, id, p.ChampionName!));
+            var anonymous = IsAnonymous(p);
+            var identity = anonymous
+                ? new PlayerIdentity(p.ChampionName!, "主播模式", region)
+                : new PlayerIdentity(p.RiotIdGameName!, p.RiotIdTagLine!, region);
+            result.Add(new(identity, p.Team == "ORDER" ? 100 : 200, id, p.ChampionName!, anonymous));
         }
         return result;
     }
+
+    private static bool MatchesActiveIdentity(LiveClientPlayerDto player, string activeId) =>
+        string.Equals(player.SummonerName, activeId, StringComparison.OrdinalIgnoreCase)
+        || string.Equals(player.RiotId, activeId, StringComparison.OrdinalIgnoreCase)
+        || string.Equals($"{player.RiotIdGameName}#{player.RiotIdTagLine}", activeId, StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsAnonymous(LiveClientPlayerDto player) =>
+        string.IsNullOrWhiteSpace(player.RiotIdGameName)
+        || string.IsNullOrWhiteSpace(player.RiotIdTagLine)
+        || string.Equals(player.RiotIdGameName, player.ChampionName, StringComparison.OrdinalIgnoreCase);
 }
 
 public sealed record LeagueRequestHandler(HttpMessageHandler Handler, Func<bool> PinRejected);

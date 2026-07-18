@@ -217,6 +217,25 @@ public sealed class MatchScoutCoordinatorTests
     }
 
     [Fact]
+    public async Task Streamer_mode_player_is_skipped_while_other_enemies_are_queried()
+    {
+        var roster = Players();
+        roster[0] = roster[0] with { IsAnonymous = true };
+        var source = new ImmediateSource();
+        var sut = new MatchScoutCoordinator(new FixedRosterSession(roster), source, new FakeClock());
+        using var stop = new CancellationTokenSource();
+        var states = Collect(sut.WatchAsync(stop.Token), stop.Token);
+
+        await WaitUntil(() => states.Any(x => x.Status == ScoutStatus.Complete));
+        stop.Cancel();
+
+        source.Calls.Should().Be(4);
+        var complete = states.Last(x => x.Status == ScoutStatus.Complete);
+        complete.Players[0].Error.Should().Be("主播模式");
+        complete.Players.Skip(1).Should().OnlyContain(x => x.Analysis != null);
+    }
+
+    [Fact]
     public async Task Refresh_cancels_old_batch_and_late_old_results_cannot_overwrite_new_results()
     {
         var session = new FakeSession(GamePhase.Loading, GamePhase.InGame);
@@ -295,7 +314,7 @@ public sealed class MatchScoutCoordinatorTests
     }
     private static async Task WaitUntil(Func<bool> condition)
     {
-        for (var i = 0; i < 10000 && !condition(); i++) await Task.Yield();
+        for (var i = 0; i < 2000 && !condition(); i++) await Task.Delay(1);
         condition().Should().BeTrue();
     }
     private static LiveParticipant[] Players() => Enumerable.Range(1, 5).Select(i => new LiveParticipant(new($"P{i}", "T", "CN1"), 200, i, $"C{i}")).ToArray();
@@ -305,6 +324,11 @@ public sealed class MatchScoutCoordinatorTests
         private int index; public int ParticipantCalls { get; private set; }
         public Task<GamePhase> GetPhaseAsync(CancellationToken cancellationToken) => Task.FromResult(phases[Math.Min(index++, phases.Length - 1)]);
         public Task<IReadOnlyList<LiveParticipant>> GetParticipantsAsync(CancellationToken cancellationToken) { ParticipantCalls++; return Task.FromResult<IReadOnlyList<LiveParticipant>>(Players()); }
+    }
+    private sealed class FixedRosterSession(IReadOnlyList<LiveParticipant> roster) : ILeagueSession
+    {
+        public Task<GamePhase> GetPhaseAsync(CancellationToken cancellationToken) => Task.FromResult(GamePhase.InGame);
+        public Task<IReadOnlyList<LiveParticipant>> GetParticipantsAsync(CancellationToken cancellationToken) => Task.FromResult(roster);
     }
     private sealed class ThrowOncePhaseSession : ILeagueSession
     {

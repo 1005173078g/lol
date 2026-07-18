@@ -33,7 +33,8 @@ public sealed record LiveParticipant(
     PlayerIdentity Player,
     int TeamId,
     int ChampionId,
-    string ChampionName);
+    string ChampionName,
+    bool IsAnonymous = false);
 
 public sealed record RecentMatch(
     bool Won,

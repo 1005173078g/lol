@@ -52,6 +52,36 @@ public sealed class LeagueSessionTests
         enemies.Should().HaveCount(5);
     }
 
+    [Fact]
+    public async Task Streamer_mode_identity_is_kept_as_an_unqueryable_enemy()
+    {
+        var json = (await Fixture()).Replace(
+            "\"riotIdGameName\":\"Enemy1\",\"riotIdTagLine\":\"TEST\"",
+            "\"riotIdGameName\":\"Ahri\",\"riotIdTagLine\":\"\"",
+            StringComparison.Ordinal);
+
+        var enemies = await Session(new StubTransport("\"Ally1#TEST\"", json), GamePhase.InGame)
+            .GetParticipantsAsync(default);
+
+        enemies.Should().HaveCount(5);
+        enemies[0].IsAnonymous.Should().BeTrue();
+        enemies[0].ChampionName.Should().Be("Ahri");
+    }
+
+    [Fact]
+    public async Task Direct_champion_id_is_accepted_when_live_client_does_not_encode_a_skin()
+    {
+        var json = (await Fixture()).Replace(
+            "\"championName\":\"Ahri\",\"riotIdGameName\":\"Enemy1\"",
+            "\"championName\":\"Ahri\",\"skinID\":103,\"riotIdGameName\":\"Enemy1\"",
+            StringComparison.Ordinal);
+
+        var enemies = await Session(new StubTransport("\"Ally1#TEST\"", json), GamePhase.InGame)
+            .GetParticipantsAsync(default);
+
+        enemies[0].ChampionId.Should().Be(103);
+    }
+
     [Theory]
     [InlineData(103000, 103)]
     [InlineData(103027, 103)]

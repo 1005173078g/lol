@@ -180,6 +180,11 @@ public sealed class MatchScoutCoordinator : IScoutStateSource
             sourceTasks = new Task<IReadOnlyList<RecentMatch>>[batch.Roster.Count];
             for (var index = 0; index < batch.Roster.Count; index++)
             {
+                if (batch.Roster[index].IsAnonymous)
+                {
+                    sourceTasks[index] = Task.FromException<IReadOnlyList<RecentMatch>>(new StreamerModeException());
+                    continue;
+                }
                 try
                 {
                     sourceTasks[index] = matches.GetRankedMatchesAsync(
@@ -217,6 +222,7 @@ public sealed class MatchScoutCoordinator : IScoutStateSource
             result = new(participant, PlayerAnalyzer.Analyze(history, participant.ChampionId));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (StreamerModeException) { result = new(participant, Error: "主播模式"); }
         catch (Exception) { result = new(participant, Error: "查询失败"); }
 
         await stateGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
@@ -271,6 +277,7 @@ public sealed class MatchScoutCoordinator : IScoutStateSource
     }
 
     private sealed record BatchContext(long Generation, IReadOnlyList<LiveParticipant> Roster, CancellationToken Token);
+    private sealed class StreamerModeException : Exception { }
 
     private static ScoutStatus Map(GamePhase phase) => phase switch
     {
