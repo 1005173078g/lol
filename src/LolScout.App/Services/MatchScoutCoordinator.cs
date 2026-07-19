@@ -4,6 +4,7 @@ using LolScout.App.ViewModels;
 using LolScout.Core.Abstractions;
 using LolScout.Core.Analysis;
 using LolScout.Core.Domain;
+using LolScout.Infrastructure.WeGame;
 
 namespace LolScout.App.Services;
 
@@ -280,6 +281,12 @@ public sealed class MatchScoutCoordinator : IScoutStateSource
                 return;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+            catch (WeGameSessionLockedException)
+            {
+                await PublishPlayerResultAsync(batchGeneration, index,
+                    new(participant, Error: "客户端资料服务未就绪"), results, cancellationToken).ConfigureAwait(false);
+                return;
+            }
             catch (Exception)
             {
                 await PublishPlayerResultAsync(batchGeneration, index, new(participant, Error: "查询失败"),
@@ -295,6 +302,7 @@ public sealed class MatchScoutCoordinator : IScoutStateSource
             result = new(participant, PlayerAnalyzer.Analyze(history, participant.ChampionId));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (WeGameSessionLockedException) { result = new(participant, Error: "客户端资料服务未就绪"); }
         catch (StreamerModeException) { result = new(participant, Error: "主播模式"); }
         catch (Exception) { result = new(participant, Error: "查询失败"); }
 

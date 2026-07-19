@@ -4,6 +4,11 @@ using LolScout.Infrastructure.League;
 
 public sealed record WeGameResponse(int StatusCode, string Content);
 
+public sealed class WeGameSessionLockedException : Exception
+{
+    public WeGameSessionLockedException() : base("The local player profile service is not ready.") { }
+}
+
 public interface IWeGameHttpTransport
 {
     Task<WeGameResponse> GetAsync(Uri uri, ReadOnlyMemory<char> token, CancellationToken cancellationToken);

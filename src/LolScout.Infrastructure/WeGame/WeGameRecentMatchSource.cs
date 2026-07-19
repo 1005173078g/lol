@@ -6,9 +6,14 @@ using LolScout.Infrastructure.League;
 
 namespace LolScout.Infrastructure.WeGame;
 
-public sealed class WeGameRecentMatchSource(IWeGameSessionDiscovery discovery, IWeGameHttpTransport transport) : IProgressiveRecentMatchSource
+public sealed class WeGameRecentMatchSource(
+    IWeGameSessionDiscovery discovery,
+    IWeGameHttpTransport transport,
+    Func<TimeSpan, CancellationToken, Task>? lockedRetryDelay = null,
+    int lockedRetryCount = 60) : IProgressiveRecentMatchSource
 {
     private static readonly HashSet<int> RankedQueues = [420, 440];
+    private readonly Func<TimeSpan, CancellationToken, Task> retryLocked = lockedRetryDelay ?? Task.Delay;
 
     public async Task<IReadOnlyList<RecentMatch>> GetRankedMatchesAsync(PlayerIdentity player, int limit, CancellationToken cancellationToken)
     {
@@ -27,7 +32,14 @@ public sealed class WeGameRecentMatchSource(IWeGameSessionDiscovery discovery, I
         if (limit <= 0) yield break;
         using var connection = discovery.Discover();
         var summonerUri = new Uri($"https://127.0.0.1:{connection.Port}/lol-summoner/v1/summoners?name={Uri.EscapeDataString($"{player.GameName}#{player.TagLine}")}");
-        var summoner = await transport.GetAsync(summonerUri, connection.Token, cancellationToken);
+        WeGameResponse summoner = new(423, "");
+        for (var attempt = 0; attempt < lockedRetryCount; attempt++)
+        {
+            summoner = await transport.GetAsync(summonerUri, connection.Token, cancellationToken);
+            if (summoner.StatusCode != 423) break;
+            if (attempt + 1 < lockedRetryCount)
+                await retryLocked(TimeSpan.FromSeconds(1), cancellationToken);
+        }
         var puuid = ReadPuuid(summoner);
         var requested = Math.Min(limit, 20);
         var ranked = new List<(long Created, RecentMatch Match)>();
@@ -124,6 +136,7 @@ public sealed class WeGameRecentMatchSource(IWeGameSessionDiscovery discovery, I
     private static void EnsureSuccess(WeGameResponse response)
     {
         if (response.StatusCode is 401 or 403) throw new WeGameNotSignedInException();
+        if (response.StatusCode == 423) throw new WeGameSessionLockedException();
         if (response.StatusCode is < 200 or > 299) throw new HttpRequestException("Local client request failed.", null, (System.Net.HttpStatusCode)response.StatusCode);
     }
 }

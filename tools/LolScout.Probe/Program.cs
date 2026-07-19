@@ -7,7 +7,7 @@ using LolScout.Infrastructure.Diagnostics;
 using LolScout.Infrastructure.League;
 using LolScout.Infrastructure.WeGame;
 
-const string Usage = "Usage: LolScout.Probe league-phase | league-participants | league-live | wegame-history --current-player --region <region>";
+const string Usage = "Usage: LolScout.Probe league-phase | league-state | league-participants | league-live | wegame-history --current-player --region <region> | wegame-player --id <gameName#tag>";
 
 if (!TryParseCommand(args, out var command, out var error))
 {
@@ -19,6 +19,110 @@ if (!TryParseCommand(args, out var command, out var error))
 if (command == "wegame-history")
 {
     return await ProbeWeGameHistoryAsync();
+}
+
+if (command == "wegame-player")
+{
+    return await ProbeWeGamePlayerAsync(args[2]);
+}
+
+if (command == "wegame-alternatives")
+{
+    var displayName = args[2];
+    var separator = displayName.LastIndexOf('#');
+    var gameName = Uri.EscapeDataString(displayName[..separator]);
+    var tagLine = Uri.EscapeDataString(displayName[(separator + 1)..]);
+    var fullName = Uri.EscapeDataString(displayName);
+    var candidates = new[]
+    {
+        "/lol-summoner/v1/status",
+        "/lol-summoner/v1/summoner-requests-ready",
+        "/lol-summoner/v1/current-summoner",
+        $"/lol-summoner/v1/alias/lookup?gameName={gameName}&tagLine={tagLine}",
+        $"/lol-summoner/v2/summoners?gameName={gameName}&tagLine={tagLine}",
+        $"/lol-summoner/v2/summoners?name={fullName}"
+    };
+    var discovery = new LeagueClientDiscovery(new WindowsProcessCommandLineSource());
+    using var connection = discovery.Discover();
+    var transport = new LeagueHttpTransport();
+    foreach (var candidate in candidates)
+    {
+        try
+        {
+            var json = await transport.GetStringAsync(new Uri($"https://127.0.0.1:{connection.Port}{candidate}"), connection.Token, default);
+            using var document = JsonDocument.Parse(json);
+            var safeValue = candidate == "/lol-summoner/v1/summoner-requests-ready" && document.RootElement.ValueKind is JsonValueKind.True or JsonValueKind.False
+                ? document.RootElement.GetBoolean().ToString()
+                : JsonSerializer.Serialize(JsonShapeRedactor.Describe(document.RootElement));
+            Console.WriteLine($"status=200 route={candidate.Split('?')[0]} shape={safeValue}");
+        }
+        catch (HttpRequestException exception)
+        {
+            Console.WriteLine($"status={(exception.StatusCode is null ? "unavailable" : ((int)exception.StatusCode.Value).ToString())} route={candidate.Split('?')[0]}");
+        }
+    }
+    return 0;
+}
+
+if (command == "league-state")
+{
+    try
+    {
+        var discovery = new LeagueClientDiscovery(new WindowsProcessCommandLineSource());
+        var league = new LeagueSession(discovery, new LeagueHttpTransport(), "联盟一区", () => GamePhase.Waiting,
+            new DictionaryChampionCatalog(new Dictionary<string, int>()));
+        Console.WriteLine($"status=200 phase={await league.GetPhaseAsync(default)}");
+        return 0;
+    }
+    catch (Exception exception)
+    {
+        Console.WriteLine($"status=unavailable type={exception.GetType().Name}");
+        return 3;
+    }
+}
+
+if (command == "league-summoner-routes")
+{
+    try
+    {
+        var discovery = new LeagueClientDiscovery(new WindowsProcessCommandLineSource());
+        using var connection = discovery.Discover();
+        var json = await new LeagueHttpTransport().GetStringAsync(
+            new Uri($"https://127.0.0.1:{connection.Port}/help"), connection.Token, default);
+        using var document = JsonDocument.Parse(json);
+        var routes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        CollectSummonerRoutes(document.RootElement, routes);
+        foreach (var route in routes.Order().Where(x => x is "GetLolSummonerV1AliasLookup" or "GetLolSummonerV1Summoners" or "GetLolSummonerV2Summoners" or "PostLolSummonerV2SummonersPuuid"))
+        {
+            Console.WriteLine(route);
+            if (TryFindProperty(document.RootElement, route, out var definition)) Console.WriteLine(definition.GetRawText());
+        }
+        return 0;
+    }
+    catch (Exception exception)
+    {
+        Console.WriteLine($"status=unavailable type={exception.GetType().Name}");
+        return 3;
+    }
+}
+
+static bool TryFindProperty(JsonElement element, string name, out JsonElement result)
+{
+    if (element.ValueKind == JsonValueKind.Object)
+    {
+        foreach (var property in element.EnumerateObject())
+        {
+            if (property.Name == name) { result = property.Value; return true; }
+            if (TryFindProperty(property.Value, name, out result)) return true;
+        }
+    }
+    else if (element.ValueKind == JsonValueKind.Array)
+    {
+        foreach (var item in element.EnumerateArray())
+            if (TryFindProperty(item, name, out result)) return true;
+    }
+    result = default;
+    return false;
 }
 
 if (command == "league-live")
@@ -43,13 +147,64 @@ static bool TryParseCommand(string[] arguments, out string? command, out string 
 {
     command = arguments.FirstOrDefault();
     error = "invalid-command";
-    if (command is "league-phase" or "league-participants" or "league-live")
+    if (command is "league-phase" or "league-state" or "league-summoner-routes" or "league-participants" or "league-live")
         return arguments.Length == 1;
+
+    if (command is "wegame-player" or "wegame-alternatives")
+        return arguments.Length == 3 && arguments[1] == "--id" && arguments[2].Contains('#');
 
     if (command != "wegame-history" || arguments.Length != 4 || arguments[1] != "--current-player" || arguments[2] != "--region" || string.IsNullOrWhiteSpace(arguments[3]))
         return false;
 
     return true;
+}
+
+static void CollectSummonerRoutes(JsonElement element, ISet<string> routes)
+{
+    if (element.ValueKind == JsonValueKind.Object)
+    {
+        foreach (var property in element.EnumerateObject())
+        {
+            if (property.Name.Contains("summoner", StringComparison.OrdinalIgnoreCase)) routes.Add(property.Name);
+            CollectSummonerRoutes(property.Value, routes);
+        }
+    }
+    else if (element.ValueKind == JsonValueKind.Array)
+    {
+        foreach (var item in element.EnumerateArray()) CollectSummonerRoutes(item, routes);
+    }
+    else if (element.ValueKind == JsonValueKind.String)
+    {
+        var value = element.GetString();
+        if (value?.Contains("summoner", StringComparison.OrdinalIgnoreCase) == true) routes.Add(value);
+    }
+}
+
+static async Task<int> ProbeWeGamePlayerAsync(string displayName)
+{
+    var timer = Stopwatch.StartNew();
+    try
+    {
+        var separator = displayName.LastIndexOf('#');
+        var player = new PlayerIdentity(displayName[..separator], displayName[(separator + 1)..], "联盟一区");
+        var discovery = new LeagueClientDiscovery(new WindowsProcessCommandLineSource());
+        var history = new WeGameRecentMatchSource(
+            new WeGameSessionDiscovery(discovery),
+            new WeGameHttpTransport(new LeagueHttpTransport()));
+        var matches = await history.GetRankedMatchesAsync(player, 20, default);
+        Console.WriteLine($"status=200 duration-ms={timer.ElapsedMilliseconds} ranked={matches.Count}");
+        return 0;
+    }
+    catch (HttpRequestException exception)
+    {
+        Console.WriteLine($"status={(exception.StatusCode is null ? "unavailable" : ((int)exception.StatusCode.Value).ToString())} duration-ms={timer.ElapsedMilliseconds} type={exception.GetType().Name}");
+        return 4;
+    }
+    catch (Exception exception)
+    {
+        Console.WriteLine($"status=unavailable duration-ms={timer.ElapsedMilliseconds} type={exception.GetType().Name} inner={exception.InnerException?.GetType().Name}");
+        return 3;
+    }
 }
 
 static async Task<int> ProbeLeagueLiveAsync()

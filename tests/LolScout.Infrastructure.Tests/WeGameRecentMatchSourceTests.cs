@@ -37,6 +37,36 @@ public sealed class WeGameRecentMatchSourceTests
     }
 
     [Fact]
+    public async Task Locked_player_service_is_retried_until_it_becomes_ready()
+    {
+        var delays = new List<TimeSpan>();
+        var transport = new StubTransport(
+            new(423, ""),
+            new(423, ""),
+            new(200, "{\"puuid\":\"fictional\"}"),
+            new(200, "{\"games\":{\"games\":[]}}"));
+        var source = new WeGameRecentMatchSource(new StubDiscovery(), transport,
+            (delay, _) => { delays.Add(delay); return Task.CompletedTask; }, 3);
+
+        var matches = await source.GetRankedMatchesAsync(new("Fictional", "TAG", "CN"), 20, default);
+
+        matches.Should().BeEmpty();
+        delays.Should().Equal(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
+        transport.Requests.Should().HaveCount(4);
+    }
+
+    [Fact]
+    public async Task Locked_player_service_has_a_specific_terminal_error()
+    {
+        var source = new WeGameRecentMatchSource(new StubDiscovery(), new StubTransport(new WeGameResponse(423, "")),
+            (_, _) => Task.CompletedTask, 1);
+
+        var action = () => source.GetRankedMatchesAsync(new("Fictional", "TAG", "CN"), 20, default);
+
+        await action.Should().ThrowExactlyAsync<WeGameSessionLockedException>();
+    }
+
+    [Fact]
     public async Task Missing_required_subtree_is_protocol_changed()
     {
         var source = new WeGameRecentMatchSource(new StubDiscovery(), new StubTransport(new(200, "{\"puuid\":\"fictional\"}"), new(200, "{\"games\":[]}")));
