@@ -278,27 +278,24 @@ public sealed class MatchScoutCoordinatorTests
     }
 
     [Fact]
-    public async Task Ended_cancels_in_flight_batch_and_clears_fingerprint()
+    public async Task Ended_keeps_in_flight_batch_alive_and_preserves_results()
     {
         var session = new FakeSession(GamePhase.Loading, GamePhase.Ended);
-        var source = new NeverCompletingSource();
+        var source = new GatedSource();
         var clock = new FakeClock();
         var sut = new MatchScoutCoordinator(session, source, clock);
         using var stop = new CancellationTokenSource();
         var states = Collect(sut.WatchAsync(stop.Token), stop.Token);
 
-        await source.AllStarted.Task.WaitAsync(TimeSpan.FromSeconds(2)); // Deadlock guard.
+        await source.AllStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
         sut.CurrentFingerprint.Should().NotBeNull();
         await clock.AdvanceAsync(TimeSpan.FromMilliseconds(500));
-        await source.AllCancelled.Task.WaitAsync(TimeSpan.FromSeconds(2)); // Deadlock guard.
         await WaitUntil(() => states.Any(x => x.Status == ScoutStatus.Ended));
 
-        sut.CurrentFingerprint.Should().BeNull();
-        states.Last(x => x.Status == ScoutStatus.Ended).Players.Should().BeEmpty();
-        var callsAtEnd = source.Calls;
-        await clock.AdvanceAsync(TimeSpan.FromSeconds(1));
-        await WaitUntil(() => states.Count(x => x.Status == ScoutStatus.Ended) >= 2);
-        source.Calls.Should().Be(callsAtEnd, "no request may start after Ended was published");
+        states.Last(x => x.Status == ScoutStatus.Ended).Players.Should().HaveCount(5);
+        source.Release.SetResult();
+        await WaitUntil(() => states.Any(x => x.Status == ScoutStatus.Complete));
+        states.Last(x => x.Status == ScoutStatus.Complete).Players.Should().OnlyContain(x => x.Analysis != null);
         stop.Cancel();
     }
 
@@ -319,8 +316,40 @@ public sealed class MatchScoutCoordinatorTests
         await WaitUntil(() => states.Any(x => x.Status == ScoutStatus.Ended));
 
         source.Calls.Should().Be(5, "the start boundary is all-or-none while the state gate is held");
-        states.Last(x => x.Status == ScoutStatus.Ended).Players.Should().BeEmpty();
+        states.Last(x => x.Status == ScoutStatus.Ended).Players.Should().HaveCount(5);
         stop.Cancel();
+    }
+
+    [Fact]
+    public async Task Manual_ids_start_a_history_batch_without_a_live_roster()
+    {
+        var source = new ImmediateSource();
+        var sut = new MatchScoutCoordinator(new FakeSession(GamePhase.Waiting), source, new FakeClock());
+        using var stop = new CancellationTokenSource();
+        var states = Collect(sut.WatchAsync(stop.Token), stop.Token);
+
+        await sut.QueryPlayersAsync("白色火焰#60697，CHARLIE#23776\n梦里相约#0520");
+        await WaitUntil(() => states.Any(x => x.Status == ScoutStatus.Complete));
+
+        source.Calls.Should().Be(3);
+        var complete = states.Last(x => x.Status == ScoutStatus.Complete);
+        complete.Players.Select(x => x.Participant.Player.GameName)
+            .Should().Equal("白色火焰", "CHARLIE", "梦里相约");
+        complete.Players.Should().OnlyContain(x => x.Participant.ChampionId == 0 && x.Analysis != null);
+        stop.Cancel();
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("missing-tag")]
+    [InlineData("a#1,b#2,c#3,d#4,e#5,f#6")]
+    public async Task Manual_ids_reject_invalid_input(string input)
+    {
+        var sut = new MatchScoutCoordinator(new FakeSession(GamePhase.Waiting), new ImmediateSource(), new FakeClock());
+
+        var action = () => sut.QueryPlayersAsync(input);
+
+        await action.Should().ThrowAsync<ArgumentException>();
     }
 
     private static ConcurrentQueue<ScoutState> Collect(IAsyncEnumerable<ScoutState> stream, CancellationToken token)

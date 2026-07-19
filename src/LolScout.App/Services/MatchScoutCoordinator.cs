@@ -11,6 +11,8 @@ public interface IScoutStateSource
 {
     IAsyncEnumerable<ScoutState> WatchAsync(CancellationToken cancellationToken);
     Task RefreshAsync(CancellationToken cancellationToken = default);
+    Task QueryPlayersAsync(string playerIds, CancellationToken cancellationToken = default) =>
+        Task.FromException(new NotSupportedException("Manual player lookup is not supported."));
 }
 
 public sealed class MatchScoutCoordinator : IScoutStateSource
@@ -22,10 +24,12 @@ public sealed class MatchScoutCoordinator : IScoutStateSource
     private readonly SemaphoreSlim stateGate = new(1, 1);
     private readonly object watcherSync = new();
     private IReadOnlyList<LiveParticipant>? currentRoster;
+    private PlayerScoutState[]? currentPlayers;
     private MatchFingerprint? currentFingerprint;
     private CancellationTokenSource? batchCancellation;
     private long generation;
     private Channel<ScoutState>? activeStates;
+    private ScoutState? lastState;
     private bool watcherActive;
 
     public MatchScoutCoordinator(ILeagueSession session, IRecentMatchSource matches, IClock clock)
@@ -46,6 +50,7 @@ public sealed class MatchScoutCoordinator : IScoutStateSource
             watcherActive = true;
             states = Channel.CreateUnbounded<ScoutState>(new() { SingleReader = true, SingleWriter = false });
             activeStates = states;
+            if (lastState is not null) states.Writer.TryWrite(lastState);
         }
 
         using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -58,11 +63,16 @@ public sealed class MatchScoutCoordinator : IScoutStateSource
         finally
         {
             lifetime.Cancel();
-            await ResetAsync(status: null).ConfigureAwait(false);
+            var pollingFailed = false;
             try { await polling.ConfigureAwait(false); }
             catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
+            catch { pollingFailed = true; }
             finally
             {
+                // A transient LCU/2999 watcher failure must not kill a history job that
+                // already owns all five player IDs. The supervising view model will
+                // attach a fresh watcher and receive the retained last state.
+                if (!pollingFailed) await ResetAsync(status: null).ConfigureAwait(false);
                 states.Writer.TryComplete();
                 lock (watcherSync)
                 {
@@ -83,7 +93,7 @@ public sealed class MatchScoutCoordinator : IScoutStateSource
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (currentRoster is not null) batch = CreateBatchInsideGate(currentRoster, cancellationToken);
+            if (currentRoster is not null) batch = CreateBatchInsideGate(currentRoster);
         }
         finally { stateGate.Release(); }
         if (batch is not null)
@@ -92,6 +102,23 @@ public sealed class MatchScoutCoordinator : IScoutStateSource
             catch (OperationCanceledException) when (batch.Token.IsCancellationRequested) { return; }
             await RunBatchAsync(batch).ConfigureAwait(false);
         }
+    }
+
+    public async Task QueryPlayersAsync(string playerIds, CancellationToken cancellationToken = default)
+    {
+        var roster = ParseManualRoster(playerIds);
+        BatchContext batch;
+        await stateGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            currentFingerprint = null;
+            currentRoster = roster;
+            batch = CreateBatchInsideGate(roster);
+        }
+        finally { stateGate.Release(); }
+
+        _ = Task.Run(() => RunBatchAsync(batch));
     }
 
     private async Task PollAsync(CancellationToken cancellationToken)
@@ -105,7 +132,7 @@ public sealed class MatchScoutCoordinator : IScoutStateSource
                 var phase = await session.GetPhaseAsync(cancellationToken).ConfigureAwait(false);
                 if (phase is GamePhase.Ended or GamePhase.Waiting)
                 {
-                    await ResetAsync(Map(phase)).ConfigureAwait(false);
+                    await RetainJobAndPublishPhaseAsync(phase, cancellationToken).ConfigureAwait(false);
                 }
                 else
                 {
@@ -127,6 +154,20 @@ public sealed class MatchScoutCoordinator : IScoutStateSource
             throw;
         }
         finally { CompleteActiveWatcher(failure); }
+    }
+
+    private async Task RetainJobAndPublishPhaseAsync(GamePhase phase, CancellationToken cancellationToken)
+    {
+        await stateGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            // The live endpoint commonly disappears before the slower history calls
+            // finish. Keep the roster/results and only allow the next live roster to
+            // establish a new match generation.
+            currentFingerprint = null;
+            Publish(new(Map(phase), SnapshotPlayers(), clock.UtcNow));
+        }
+        finally { stateGate.Release(); }
     }
 
     private async Task PublishPhaseAsync(GamePhase phase, CancellationToken cancellationToken)
@@ -153,18 +194,19 @@ public sealed class MatchScoutCoordinator : IScoutStateSource
             if (fingerprint == currentFingerprint) return;
             currentFingerprint = fingerprint;
             currentRoster = roster.ToArray();
-            batch = CreateBatchInsideGate(currentRoster, cancellationToken);
+            batch = CreateBatchInsideGate(currentRoster);
         }
         finally { stateGate.Release(); }
 
         _ = Task.Run(() => RunBatchAsync(batch));
     }
 
-    private BatchContext CreateBatchInsideGate(IReadOnlyList<LiveParticipant> roster, CancellationToken cancellationToken)
+    private BatchContext CreateBatchInsideGate(IReadOnlyList<LiveParticipant> roster)
     {
         var batchGeneration = ++generation;
         CancelBatchInsideGate();
-        batchCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        batchCancellation = new CancellationTokenSource();
+        currentPlayers = roster.Select(x => new PlayerScoutState(x)).ToArray();
         return new(batchGeneration, roster.ToArray(), batchCancellation.Token);
     }
 
@@ -176,6 +218,7 @@ public sealed class MatchScoutCoordinator : IScoutStateSource
         try
         {
             if (!IsCurrent(batch.Generation, batch.Token)) return;
+            currentPlayers = initial;
             Publish(new(ScoutStatus.Querying, initial, clock.UtcNow));
             sourceTasks = new Task<IReadOnlyList<RecentMatch>>[batch.Roster.Count];
             for (var index = 0; index < batch.Roster.Count; index++)
@@ -212,7 +255,10 @@ public sealed class MatchScoutCoordinator : IScoutStateSource
         try
         {
             if (IsCurrent(batch.Generation, batch.Token))
+            {
+                currentPlayers = initial;
                 Publish(new(ScoutStatus.Complete, initial.ToArray(), clock.UtcNow));
+            }
         }
         finally { stateGate.Release(); }
     }
@@ -263,6 +309,7 @@ public sealed class MatchScoutCoordinator : IScoutStateSource
         {
             if (!IsCurrent(batchGeneration, cancellationToken)) return;
             results[index] = result;
+            currentPlayers = results;
             Publish(new(ScoutStatus.Querying, results.ToArray(), clock.UtcNow));
         }
         finally { stateGate.Release(); }
@@ -276,6 +323,7 @@ public sealed class MatchScoutCoordinator : IScoutStateSource
             generation++;
             CancelBatchInsideGate();
             currentRoster = null;
+            currentPlayers = null;
             currentFingerprint = null;
             if (status is not null) Publish(new(status.Value, [], clock.UtcNow));
         }
@@ -293,12 +341,16 @@ public sealed class MatchScoutCoordinator : IScoutStateSource
     }
 
     private IReadOnlyList<PlayerScoutState> SnapshotPlayers() =>
-        currentRoster?.Select(x => new PlayerScoutState(x)).ToArray() ?? [];
+        currentPlayers?.ToArray() ?? currentRoster?.Select(x => new PlayerScoutState(x)).ToArray() ?? [];
 
     private void Publish(ScoutState state)
     {
         Channel<ScoutState>? states;
-        lock (watcherSync) states = activeStates;
+        lock (watcherSync)
+        {
+            lastState = state;
+            states = activeStates;
+        }
         states?.Writer.TryWrite(state);
     }
 
@@ -311,6 +363,25 @@ public sealed class MatchScoutCoordinator : IScoutStateSource
 
     private sealed record BatchContext(long Generation, IReadOnlyList<LiveParticipant> Roster, CancellationToken Token);
     private sealed class StreamerModeException : Exception { }
+
+    private static IReadOnlyList<LiveParticipant> ParseManualRoster(string playerIds)
+    {
+        var entries = (playerIds ?? string.Empty).Split(
+            [',', '，', ';', '；', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (entries.Length is < 1 or > 5)
+            throw new ArgumentException("请输入一到五个玩家 ID。", nameof(playerIds));
+
+        var roster = new List<LiveParticipant>(entries.Length);
+        foreach (var entry in entries)
+        {
+            var separator = entry.LastIndexOf('#');
+            if (separator <= 0 || separator == entry.Length - 1)
+                throw new ArgumentException($"ID 格式错误：{entry}", nameof(playerIds));
+            var player = new PlayerIdentity(entry[..separator], entry[(separator + 1)..], "联盟一区");
+            roster.Add(new(player, 200, 0, "未选择英雄"));
+        }
+        return roster;
+    }
 
     private static ScoutStatus Map(GamePhase phase) => phase switch
     {

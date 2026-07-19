@@ -15,6 +15,19 @@
         <TextBlock Text="{Binding OperationStatus}" Foreground="#AFC4E8" FontSize="14" />
       </StackPanel>
     </Border>
+    <Border DockPanel.Dock="Top" BorderBrush="#CBD5E1" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,0,0,12">
+      <Grid>
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*" />
+          <ColumnDefinition Width="Auto" />
+        </Grid.ColumnDefinitions>
+        <TextBox Grid.Column="0" Text="{Binding ManualPlayerIds, UpdateSourceTrigger=PropertyChanged}"
+                 MinHeight="42" Padding="10,8" VerticalContentAlignment="Center"
+                 ToolTip="粘贴游戏名#标签，多个 ID 用逗号或换行分隔" />
+        <Button Grid.Column="1" Content="手动查询" Command="{Binding QueryManualCommand}"
+                Padding="18,9" Margin="10,0,0,0" />
+      </Grid>
+    </Border>
     <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,16,0,0">
       <Button Content="复制精简播报" Command="{Binding CopyBroadcastCommand}" Padding="18,9" Margin="5" />
       <Button Content="重新查询" Command="{Binding RefreshCommand}" Padding="18,9" Margin="5" />

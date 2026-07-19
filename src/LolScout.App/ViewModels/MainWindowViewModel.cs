@@ -26,6 +26,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
     [ObservableProperty] private string? lastCommandError;
     [ObservableProperty] private bool isTopmost;
     [ObservableProperty] private bool shouldShowWindow;
+    [ObservableProperty] private string manualPlayerIds = "";
 
     public MainWindowViewModel(IScoutStateSource? coordinator, IClipboardService clipboard, IUiDispatcher dispatcher,
         Func<TimeSpan, CancellationToken, Task>? retryDelay = null, Action<Exception>? reportWatchFailure = null)
@@ -38,6 +39,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         for (var index = 0; index < 5; index++) Players.Add(new());
         CopyBroadcastCommand = new AsyncRelayCommand(CopyBroadcastAsync);
         RefreshCommand = new AsyncRelayCommand(RefreshAsync);
+        QueryManualCommand = new AsyncRelayCommand(QueryManualAsync);
         ToggleTopmostCommand = new RelayCommand(() => IsTopmost = !IsTopmost);
         ShowStatusCommand = new RelayCommand(() => OperationStatus = $"当前状态：{StatusText}");
     }
@@ -45,6 +47,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
     public ObservableCollection<PlayerCardViewModel> Players { get; } = [];
     public IAsyncRelayCommand CopyBroadcastCommand { get; }
     public IAsyncRelayCommand RefreshCommand { get; }
+    public IAsyncRelayCommand QueryManualCommand { get; }
     public IRelayCommand ToggleTopmostCommand { get; }
     public IRelayCommand ShowStatusCommand { get; }
 
@@ -106,7 +109,9 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
     private void ApplyState(ScoutState state)
     {
         latestPlayers = state.Players;
-        StatusText = ChineseStatus(state.Status);
+        StatusText = state.Status == ScoutStatus.Querying
+            ? $"正在查询（已返回 {state.Players.Count(x => x.IsComplete)}/{state.Players.Count}）"
+            : ChineseStatus(state.Status);
         for (var index = 0; index < Players.Count; index++)
         {
             if (index < state.Players.Count) Players[index].Update(state.Players[index]);
@@ -119,7 +124,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
             showWindowPending = true;
             ShouldShowWindow = true;
         }
-        if (state.Status is ScoutStatus.Waiting or ScoutStatus.Ended) rosterSeen = false;
+        if ((state.Status is ScoutStatus.Waiting or ScoutStatus.Ended) && state.Players.Count == 0) rosterSeen = false;
     }
 
     private async Task CopyBroadcastAsync()
@@ -153,6 +158,27 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         {
             LastCommandError = "重新查询失败";
             OperationStatus = "重新查询失败，请重试";
+        }
+    }
+
+    private async Task QueryManualAsync()
+    {
+        try
+        {
+            if (coordinator is null) throw new InvalidOperationException("查询服务尚未连接");
+            await coordinator.QueryPlayersAsync(ManualPlayerIds, lifetime.Token);
+            LastCommandError = null;
+            OperationStatus = "已开始手动查询";
+        }
+        catch (ArgumentException)
+        {
+            LastCommandError = "ID 格式错误";
+            OperationStatus = "请粘贴游戏名#标签，多个 ID 用逗号或换行分隔";
+        }
+        catch (Exception)
+        {
+            LastCommandError = "手动查询失败";
+            OperationStatus = "手动查询失败，请重试";
         }
     }
 
