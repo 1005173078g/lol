@@ -155,19 +155,19 @@ public sealed class WeGameRecentMatchSourceTests
     }
 
     [Fact]
-    public async Task Bounded_source_allows_only_two_concurrent_player_queries()
+    public async Task Bounded_source_allows_only_three_concurrent_player_queries()
     {
         var inner = new TrackingRecentMatchSource();
-        var source = new BoundedRecentMatchSource(inner, 2);
+        var source = new BoundedRecentMatchSource(inner, 3);
         var players = Enumerable.Range(1, 5).Select(i => new PlayerIdentity($"P{i}", "T", "联盟一区"));
 
         var requests = players.Select(player => source.GetRankedMatchesAsync(player, 20, default)).ToArray();
-        await inner.TwoStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await inner.ThreeStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
 
-        inner.MaximumConcurrency.Should().Be(2);
+        inner.MaximumConcurrency.Should().Be(3);
         inner.Release.TrySetResult();
         await Task.WhenAll(requests);
-        inner.MaximumConcurrency.Should().Be(2);
+        inner.MaximumConcurrency.Should().Be(3);
     }
 
     [Fact]
@@ -222,13 +222,13 @@ public sealed class WeGameRecentMatchSourceTests
     {
         private int running;
         public int MaximumConcurrency { get; private set; }
-        public TaskCompletionSource TwoStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource ThreeStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public async Task<IReadOnlyList<RecentMatch>> GetRankedMatchesAsync(PlayerIdentity player, int limit, CancellationToken cancellationToken)
         {
             var current = Interlocked.Increment(ref running);
             MaximumConcurrency = Math.Max(MaximumConcurrency, current);
-            if (current == 2) TwoStarted.TrySetResult();
+            if (current == 3) ThreeStarted.TrySetResult();
             await Release.Task.WaitAsync(cancellationToken);
             Interlocked.Decrement(ref running);
             return [];

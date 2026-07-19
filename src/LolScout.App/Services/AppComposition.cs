@@ -26,7 +26,7 @@ public sealed class AppComposition : IDisposable
         ILeagueSession trackedLeague = new PhaseTrackingLeagueSession(league, phase => currentPhase = phase);
         var weGameDiscovery = new WeGameSessionDiscovery(discovery);
         IRecentMatchSource history = new BoundedRecentMatchSource(
-            new WeGameRecentMatchSource(weGameDiscovery, new WeGameHttpTransport(transport)), 2);
+            new WeGameRecentMatchSource(weGameDiscovery, new WeGameHttpTransport(transport)), 3);
         return new(new MatchScoutCoordinator(trackedLeague, history, new SystemClock()));
     }
 
