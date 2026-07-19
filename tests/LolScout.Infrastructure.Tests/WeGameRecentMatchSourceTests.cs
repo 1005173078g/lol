@@ -122,6 +122,25 @@ public sealed class WeGameRecentMatchSourceTests
     }
 
     [Fact]
+    public async Task Progressive_query_yields_each_page_before_the_final_twenty_ranked_matches()
+    {
+        var firstRanked = string.Join(',', Enumerable.Range(21, 10).Select(i => $"{{\"gameCreation\":{i},\"queueId\":420,\"participants\":[{{\"championId\":1,\"stats\":{{\"win\":true,\"kills\":1,\"deaths\":1,\"assists\":1}}}}]}}"));
+        var firstUnranked = string.Join(',', Enumerable.Range(31, 10).Select(i => $"{{\"gameCreation\":{i},\"queueId\":400}}"));
+        var secondRanked = string.Join(',', Enumerable.Range(1, 10).Select(i => $"{{\"gameCreation\":{i},\"queueId\":420,\"participants\":[{{\"championId\":1,\"stats\":{{\"win\":false,\"kills\":1,\"deaths\":1,\"assists\":1}}}}]}}"));
+        var transport = new StubTransport(
+            new(200, "{\"puuid\":\"fictional\"}"),
+            new(200, $"{{\"games\":{{\"games\":[{firstUnranked},{firstRanked}]}}}}"),
+            new(200, $"{{\"games\":{{\"games\":[{secondRanked}]}}}}"));
+        IProgressiveRecentMatchSource source = new WeGameRecentMatchSource(new StubDiscovery(), transport);
+        var counts = new List<int>();
+
+        await foreach (var update in source.GetRankedMatchUpdatesAsync(new("Fictional", "TAG", "联盟一区"), 20, default))
+            counts.Add(update.Count);
+
+        counts.Should().Equal(10, 20);
+    }
+
+    [Fact]
     public async Task Full_riot_id_with_non_ascii_and_reserved_characters_is_encoded_once_in_final_uri()
     {
         var transport = new StubTransport(new(200, "{\"puuid\":\"fictional\"}"), new(200, "{\"games\":{\"games\":[]}}"));

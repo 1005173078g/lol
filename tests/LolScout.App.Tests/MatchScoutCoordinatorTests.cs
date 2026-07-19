@@ -236,6 +236,23 @@ public sealed class MatchScoutCoordinatorTests
     }
 
     [Fact]
+    public async Task Progressive_source_publishes_first_page_before_final_page_completes()
+    {
+        var source = new ProgressiveSource();
+        var sut = new MatchScoutCoordinator(new FixedRosterSession(Players()), source, new FakeClock());
+        using var stop = new CancellationTokenSource();
+        var states = Collect(sut.WatchAsync(stop.Token), stop.Token);
+
+        await WaitUntil(() => states.Any(x => x.Players.Any(p => p.Analysis?.MatchCount == 1)));
+        states.Should().NotContain(x => x.Status == ScoutStatus.Complete);
+
+        source.ReleaseFinal.TrySetResult();
+        await WaitUntil(() => states.Any(x => x.Status == ScoutStatus.Complete));
+        states.Last(x => x.Status == ScoutStatus.Complete).Players.Should().OnlyContain(x => x.Analysis != null && x.Analysis.MatchCount == 2);
+        stop.Cancel();
+    }
+
+    [Fact]
     public async Task Refresh_cancels_old_batch_and_late_old_results_cannot_overwrite_new_results()
     {
         var session = new FakeSession(GamePhase.Loading, GamePhase.InGame);
@@ -329,6 +346,19 @@ public sealed class MatchScoutCoordinatorTests
     {
         public Task<GamePhase> GetPhaseAsync(CancellationToken cancellationToken) => Task.FromResult(GamePhase.InGame);
         public Task<IReadOnlyList<LiveParticipant>> GetParticipantsAsync(CancellationToken cancellationToken) => Task.FromResult(roster);
+    }
+    private sealed class ProgressiveSource : IProgressiveRecentMatchSource
+    {
+        public TaskCompletionSource ReleaseFinal { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public Task<IReadOnlyList<RecentMatch>> GetRankedMatchesAsync(PlayerIdentity player, int limit, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("Coordinator must consume progressive updates.");
+        public async IAsyncEnumerable<IReadOnlyList<RecentMatch>> GetRankedMatchUpdatesAsync(
+            PlayerIdentity player, int limit, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            yield return [new(true, null, "", 1, 1, 1, 1)];
+            await ReleaseFinal.Task.WaitAsync(cancellationToken);
+            yield return [new(true, null, "", 1, 1, 1, 1), new(false, null, "", 1, 1, 1, 1)];
+        }
     }
     private sealed class ThrowOncePhaseSession : ILeagueSession
     {

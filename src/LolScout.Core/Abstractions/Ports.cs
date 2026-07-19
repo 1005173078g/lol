@@ -17,6 +17,14 @@ public interface IRecentMatchSource
         CancellationToken cancellationToken);
 }
 
+public interface IProgressiveRecentMatchSource : IRecentMatchSource
+{
+    IAsyncEnumerable<IReadOnlyList<RecentMatch>> GetRankedMatchUpdatesAsync(
+        PlayerIdentity player,
+        int limit,
+        CancellationToken cancellationToken);
+}
+
 public interface IClock
 {
     DateTimeOffset UtcNow { get; }

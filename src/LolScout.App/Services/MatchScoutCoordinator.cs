@@ -185,6 +185,11 @@ public sealed class MatchScoutCoordinator : IScoutStateSource
                     sourceTasks[index] = Task.FromException<IReadOnlyList<RecentMatch>>(new StreamerModeException());
                     continue;
                 }
+                if (matches is IProgressiveRecentMatchSource)
+                {
+                    sourceTasks[index] = Task.FromResult<IReadOnlyList<RecentMatch>>([]);
+                    continue;
+                }
                 try
                 {
                     sourceTasks[index] = matches.GetRankedMatchesAsync(
@@ -215,6 +220,28 @@ public sealed class MatchScoutCoordinator : IScoutStateSource
     private async Task ObservePlayerAsync(long batchGeneration, LiveParticipant participant, int index,
         Task<IReadOnlyList<RecentMatch>> sourceTask, PlayerScoutState[] results, CancellationToken cancellationToken)
     {
+        if (matches is IProgressiveRecentMatchSource progressive && !participant.IsAnonymous)
+        {
+            try
+            {
+                await foreach (var history in progressive.GetRankedMatchUpdatesAsync(
+                    participant.Player, 20, cancellationToken).ConfigureAwait(false))
+                {
+                    await PublishPlayerResultAsync(batchGeneration, index,
+                        new(participant, PlayerAnalyzer.Analyze(history, participant.ChampionId)),
+                        results, cancellationToken).ConfigureAwait(false);
+                }
+                return;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+            catch (Exception)
+            {
+                await PublishPlayerResultAsync(batchGeneration, index, new(participant, Error: "查询失败"),
+                    results, cancellationToken).ConfigureAwait(false);
+                return;
+            }
+        }
+
         PlayerScoutState result;
         try
         {
@@ -225,6 +252,12 @@ public sealed class MatchScoutCoordinator : IScoutStateSource
         catch (StreamerModeException) { result = new(participant, Error: "主播模式"); }
         catch (Exception) { result = new(participant, Error: "查询失败"); }
 
+        await PublishPlayerResultAsync(batchGeneration, index, result, results, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task PublishPlayerResultAsync(long batchGeneration, int index, PlayerScoutState result,
+        PlayerScoutState[] results, CancellationToken cancellationToken)
+    {
         await stateGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
         try
         {

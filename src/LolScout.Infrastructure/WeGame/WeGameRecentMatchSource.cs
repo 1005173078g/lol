@@ -1,20 +1,30 @@
 using System.Text.Json;
+using System.Runtime.CompilerServices;
 using LolScout.Core.Abstractions;
 using LolScout.Core.Domain;
 using LolScout.Infrastructure.League;
 
 namespace LolScout.Infrastructure.WeGame;
 
-public sealed class WeGameRecentMatchSource(IWeGameSessionDiscovery discovery, IWeGameHttpTransport transport) : IRecentMatchSource
+public sealed class WeGameRecentMatchSource(IWeGameSessionDiscovery discovery, IWeGameHttpTransport transport) : IProgressiveRecentMatchSource
 {
     private static readonly HashSet<int> RankedQueues = [420, 440];
 
     public async Task<IReadOnlyList<RecentMatch>> GetRankedMatchesAsync(PlayerIdentity player, int limit, CancellationToken cancellationToken)
     {
+        IReadOnlyList<RecentMatch> latest = [];
+        await foreach (var update in GetRankedMatchUpdatesAsync(player, limit, cancellationToken).ConfigureAwait(false))
+            latest = update;
+        return latest;
+    }
+
+    public async IAsyncEnumerable<IReadOnlyList<RecentMatch>> GetRankedMatchUpdatesAsync(
+        PlayerIdentity player, int limit, [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
         ArgumentNullException.ThrowIfNull(player);
         if (string.IsNullOrWhiteSpace(player.GameName) || string.IsNullOrWhiteSpace(player.TagLine) || string.IsNullOrWhiteSpace(player.Region))
             throw new ArgumentException("A complete player identity is required.", nameof(player));
-        if (limit <= 0) return [];
+        if (limit <= 0) yield break;
         using var connection = discovery.Discover();
         var summonerUri = new Uri($"https://127.0.0.1:{connection.Port}/lol-summoner/v1/summoners?name={Uri.EscapeDataString($"{player.GameName}#{player.TagLine}")}");
         var summoner = await transport.GetAsync(summonerUri, connection.Token, cancellationToken);
@@ -28,10 +38,10 @@ public sealed class WeGameRecentMatchSource(IWeGameSessionDiscovery discovery, I
             var history = await transport.GetAsync(historyUri, connection.Token, cancellationToken);
             var pageMatches = ReadMatches(history);
             ranked.AddRange(pageMatches);
+            yield return ranked.OrderByDescending(x => x.Created)
+                .Take(requested).Select(x => x.Match).ToArray();
             if (ReadGameCount(history) < 20) break;
         }
-        return ranked.OrderByDescending(x => x.Created)
-            .Take(requested).Select(x => x.Match).ToArray();
     }
 
     private static string ReadPuuid(WeGameResponse response)
@@ -118,7 +128,7 @@ public sealed class WeGameRecentMatchSource(IWeGameSessionDiscovery discovery, I
     }
 }
 
-public sealed class BoundedRecentMatchSource(IRecentMatchSource inner, int maximumConcurrency) : IRecentMatchSource
+public sealed class BoundedRecentMatchSource(IRecentMatchSource inner, int maximumConcurrency) : IProgressiveRecentMatchSource
 {
     private readonly SemaphoreSlim gate = new(maximumConcurrency > 0 ? maximumConcurrency : throw new ArgumentOutOfRangeException(nameof(maximumConcurrency)));
 
@@ -126,6 +136,25 @@ public sealed class BoundedRecentMatchSource(IRecentMatchSource inner, int maxim
     {
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try { return await inner.GetRankedMatchesAsync(player, limit, cancellationToken).ConfigureAwait(false); }
+        finally { gate.Release(); }
+    }
+
+    public async IAsyncEnumerable<IReadOnlyList<RecentMatch>> GetRankedMatchUpdatesAsync(
+        PlayerIdentity player, int limit, [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (inner is IProgressiveRecentMatchSource progressive)
+            {
+                await foreach (var update in progressive.GetRankedMatchUpdatesAsync(player, limit, cancellationToken).ConfigureAwait(false))
+                    yield return update;
+            }
+            else
+            {
+                yield return await inner.GetRankedMatchesAsync(player, limit, cancellationToken).ConfigureAwait(false);
+            }
+        }
         finally { gate.Release(); }
     }
 }
