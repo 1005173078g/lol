@@ -110,6 +110,17 @@ public sealed class LeagueSessionTests
         enemies[1].ChampionId.Should().Be(266);
     }
 
+    [Fact]
+    public async Task Live_client_timeout_is_retried_instead_of_hanging_the_watcher()
+    {
+        var transport = new TimeoutOnceTransport("\"Ally1#TEST\"", await Fixture());
+        var enemies = await Session(transport, GamePhase.InGame, liveRequestTimeout: TimeSpan.FromMilliseconds(10))
+            .GetParticipantsAsync(default);
+
+        enemies.Should().HaveCount(5);
+        transport.Attempts.Should().Be(3);
+    }
+
     [Theory]
     [InlineData(103000, 103)]
     [InlineData(103027, 103)]
@@ -273,9 +284,9 @@ public sealed class LeagueSessionTests
         enemies.Should().HaveCount(5);
     }
 
-    private static LeagueSession Session(ILeagueHttpTransport transport, GamePhase phase = GamePhase.ChampionSelect, IChampionCatalog? champions = null) =>
+    private static LeagueSession Session(ILeagueHttpTransport transport, GamePhase phase = GamePhase.ChampionSelect, IChampionCatalog? champions = null, TimeSpan? liveRequestTimeout = null) =>
         new(new LeagueClientDiscovery(new StubProcesses(new LeagueClientProcess("LeagueClientUx.exe", "LeagueClientUx.exe --app-port=54321 --remoting-auth-token=fictional"))), transport, "CN1", () => phase,
-            champions ?? new DictionaryChampionCatalog(new Dictionary<string, int> { ["Annie"] = 1, ["Garen"] = 86, ["Ahri"] = 103, ["Aatrox"] = 266, ["Ashe"] = 22, ["LeeSin"] = 64 }));
+            champions ?? new DictionaryChampionCatalog(new Dictionary<string, int> { ["Annie"] = 1, ["Garen"] = 86, ["Ahri"] = 103, ["Aatrox"] = 266, ["Ashe"] = 22, ["LeeSin"] = 64 }), liveRequestTimeout);
 
     private static Task<string> Fixture() => File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "Fixtures", "league-participants.sanitized.json"));
     private sealed class StubProcesses(params LeagueClientProcess[] values) : IProcessCommandLineSource { public IReadOnlyList<LeagueClientProcess> GetProcesses() => values; }
@@ -284,6 +295,17 @@ public sealed class LeagueSessionTests
         private readonly Queue<string> responses = new(responses);
         public List<Uri> Requests { get; } = [];
         public Task<string> GetStringAsync(Uri uri, ReadOnlyMemory<char> token, CancellationToken cancellationToken) { Requests.Add(uri); return Task.FromResult(responses.Dequeue()); }
+    }
+    private sealed class TimeoutOnceTransport(params string[] responses) : ILeagueHttpTransport
+    {
+        private readonly Queue<string> responses = new(responses);
+        public int Attempts { get; private set; }
+        public async Task<string> GetStringAsync(Uri uri, ReadOnlyMemory<char> token, CancellationToken cancellationToken)
+        {
+            Attempts++;
+            if (Attempts == 1) await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            return responses.Dequeue();
+        }
     }
     private sealed class ThrowingHandler(Exception exception) : HttpMessageHandler
     {

@@ -13,9 +13,10 @@ namespace LolScout.Infrastructure.League;
 
 public interface ILeagueHttpTransport { Task<string> GetStringAsync(Uri uri, ReadOnlyMemory<char> token, CancellationToken cancellationToken); }
 
-public sealed class LeagueSession(LeagueClientDiscovery discovery, ILeagueHttpTransport transport, string region, Func<GamePhase> phase, IChampionCatalog champions) : ILeagueSession
+public sealed class LeagueSession(LeagueClientDiscovery discovery, ILeagueHttpTransport transport, string region, Func<GamePhase> phase, IChampionCatalog champions, TimeSpan? liveRequestTimeout = null) : ILeagueSession
 {
     private static readonly JsonSerializerOptions StrictJson = new() { UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow };
+    private readonly TimeSpan liveTimeout = liveRequestTimeout ?? TimeSpan.FromSeconds(5);
 
     public async Task<GamePhase> GetPhaseAsync(CancellationToken cancellationToken)
     {
@@ -30,8 +31,8 @@ public sealed class LeagueSession(LeagueClientDiscovery discovery, ILeagueHttpTr
         var currentPhase = phase();
         if (currentPhase == GamePhase.ChampionSelect) throw new ParticipantsUnavailableException();
         if (currentPhase is not (GamePhase.Loading or GamePhase.InGame)) throw new ParticipantsUnavailableException();
-        var active = await transport.GetStringAsync(new("https://127.0.0.1:2999/liveclientdata/activeplayername"), default, cancellationToken);
-        var list = await transport.GetStringAsync(new("https://127.0.0.1:2999/liveclientdata/playerlist"), default, cancellationToken);
+        var active = await GetLiveStringAsync(new("https://127.0.0.1:2999/liveclientdata/activeplayername"), cancellationToken);
+        var list = await GetLiveStringAsync(new("https://127.0.0.1:2999/liveclientdata/playerlist"), cancellationToken);
         string? activeId; LiveClientPlayerDto[]? players;
         try { activeId = JsonSerializer.Deserialize<string>(active); players = JsonSerializer.Deserialize<LiveClientPlayerDto[]>(list, StrictJson); }
         catch (JsonException ex) { throw new ProtocolChangedException("Unknown official Live Client response.", ex); }
@@ -76,6 +77,21 @@ public sealed class LeagueSession(LeagueClientDiscovery discovery, ILeagueHttpTr
         || string.Equals(player.RiotIdGameName, player.ChampionName, StringComparison.OrdinalIgnoreCase)
         || (!string.IsNullOrWhiteSpace(player.SkinName)
             && string.Equals(player.RiotIdGameName, player.SkinName, StringComparison.OrdinalIgnoreCase));
+
+    private async Task<string> GetLiveStringAsync(Uri uri, CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(liveTimeout);
+            try { return await transport.GetStringAsync(uri, default, timeout.Token).ConfigureAwait(false); }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                if (attempt == 2) throw new TimeoutException("The Live Client request timed out after three attempts.");
+            }
+        }
+        throw new TimeoutException("The Live Client request timed out after three attempts.");
+    }
 }
 
 public sealed record LeagueRequestHandler(HttpMessageHandler Handler, Func<bool> PinRejected);
