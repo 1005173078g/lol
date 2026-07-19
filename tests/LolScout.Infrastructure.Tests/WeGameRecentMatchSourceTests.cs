@@ -103,6 +103,25 @@ public sealed class WeGameRecentMatchSourceTests
     }
 
     [Fact]
+    public async Task Paginates_past_unranked_games_until_twenty_ranked_matches_are_collected()
+    {
+        var unranked = string.Join(',', Enumerable.Range(21, 20).Select(i => $"{{\"gameCreation\":{i},\"queueId\":400}}"));
+        var ranked = string.Join(',', Enumerable.Range(1, 20).Select(i => $"{{\"gameCreation\":{i},\"queueId\":420,\"participants\":[{{\"championId\":1,\"stats\":{{\"win\":true,\"kills\":1,\"deaths\":1,\"assists\":1}}}}]}}"));
+        var transport = new StubTransport(
+            new(200, "{\"puuid\":\"fictional\"}"),
+            new(200, $"{{\"games\":{{\"games\":[{unranked}]}}}}"),
+            new(200, $"{{\"games\":{{\"games\":[{ranked}]}}}}"));
+        var source = new WeGameRecentMatchSource(new StubDiscovery(), transport);
+
+        var matches = await source.GetRankedMatchesAsync(new("Fictional", "TAG", "联盟一区"), 20, default);
+
+        matches.Should().HaveCount(20);
+        transport.Requests.Should().HaveCount(3);
+        transport.Requests[1].Query.Should().Contain("begIndex=0").And.Contain("endIndex=19");
+        transport.Requests[2].Query.Should().Contain("begIndex=20").And.Contain("endIndex=39");
+    }
+
+    [Fact]
     public async Task Full_riot_id_with_non_ascii_and_reserved_characters_is_encoded_once_in_final_uri()
     {
         var transport = new StubTransport(new(200, "{\"puuid\":\"fictional\"}"), new(200, "{\"games\":{\"games\":[]}}"));

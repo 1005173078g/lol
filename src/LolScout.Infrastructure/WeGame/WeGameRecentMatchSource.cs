@@ -19,10 +19,19 @@ public sealed class WeGameRecentMatchSource(IWeGameSessionDiscovery discovery, I
         var summonerUri = new Uri($"https://127.0.0.1:{connection.Port}/lol-summoner/v1/summoners?name={Uri.EscapeDataString($"{player.GameName}#{player.TagLine}")}");
         var summoner = await transport.GetAsync(summonerUri, connection.Token, cancellationToken);
         var puuid = ReadPuuid(summoner);
-        var historyUri = new Uri($"https://127.0.0.1:{connection.Port}/lol-match-history/v1/products/lol/{Uri.EscapeDataString(puuid)}/matches?begIndex=0&endIndex=19");
-        var history = await transport.GetAsync(historyUri, connection.Token, cancellationToken);
-        return ReadMatches(history).OrderByDescending(x => x.Created)
-            .Take(Math.Min(limit, 20)).Select(x => x.Match).ToArray();
+        var requested = Math.Min(limit, 20);
+        var ranked = new List<(long Created, RecentMatch Match)>();
+        for (var page = 0; page < 5 && ranked.Count < requested; page++)
+        {
+            var begin = page * 20;
+            var historyUri = new Uri($"https://127.0.0.1:{connection.Port}/lol-match-history/v1/products/lol/{Uri.EscapeDataString(puuid)}/matches?begIndex={begin}&endIndex={begin + 19}");
+            var history = await transport.GetAsync(historyUri, connection.Token, cancellationToken);
+            var pageMatches = ReadMatches(history);
+            ranked.AddRange(pageMatches);
+            if (ReadGameCount(history) < 20) break;
+        }
+        return ranked.OrderByDescending(x => x.Created)
+            .Take(requested).Select(x => x.Match).ToArray();
     }
 
     private static string ReadPuuid(WeGameResponse response)
@@ -57,6 +66,20 @@ public sealed class WeGameRecentMatchSource(IWeGameSessionDiscovery discovery, I
             }
             return result;
         }
+    }
+
+    private static int ReadGameCount(WeGameResponse response)
+    {
+        EnsureSuccess(response);
+        try
+        {
+            using var document = JsonDocument.Parse(response.Content);
+            if (!document.RootElement.TryGetProperty("games", out var envelope) || envelope.ValueKind != JsonValueKind.Object
+                || !envelope.TryGetProperty("games", out var games) || games.ValueKind != JsonValueKind.Array)
+                throw new ProtocolChangedException("Required match history subtree is missing.");
+            return games.GetArrayLength();
+        }
+        catch (JsonException ex) { throw new ProtocolChangedException("Unknown match history response.", ex); }
     }
 
     private static (long Created, int QueueId) ReadMatchHeader(JsonElement game)
