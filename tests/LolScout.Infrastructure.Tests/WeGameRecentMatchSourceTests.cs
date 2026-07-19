@@ -1,4 +1,5 @@
 using FluentAssertions;
+using LolScout.Core.Abstractions;
 using LolScout.Core.Domain;
 using LolScout.Infrastructure.League;
 using LolScout.Infrastructure.WeGame;
@@ -125,13 +126,29 @@ public sealed class WeGameRecentMatchSourceTests
     }
 
     [Fact]
-    public async Task Per_attempt_timeout_is_retried_only_once()
+    public async Task Per_attempt_timeout_is_retried_twice()
     {
         var inner = new TimeoutLeagueTransport();
         var transport = new WeGameHttpTransport(inner, TimeSpan.FromMilliseconds(10), (_, _) => Task.CompletedTask);
         var act = () => transport.GetAsync(new("https://127.0.0.1:12345/test"), "token".AsMemory(), default);
         await act.Should().ThrowAsync<TimeoutException>();
-        inner.Attempts.Should().Be(2);
+        inner.Attempts.Should().Be(3);
+    }
+
+    [Fact]
+    public async Task Bounded_source_allows_only_two_concurrent_player_queries()
+    {
+        var inner = new TrackingRecentMatchSource();
+        var source = new BoundedRecentMatchSource(inner, 2);
+        var players = Enumerable.Range(1, 5).Select(i => new PlayerIdentity($"P{i}", "T", "联盟一区"));
+
+        var requests = players.Select(player => source.GetRankedMatchesAsync(player, 20, default)).ToArray();
+        await inner.TwoStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        inner.MaximumConcurrency.Should().Be(2);
+        inner.Release.TrySetResult();
+        await Task.WhenAll(requests);
+        inner.MaximumConcurrency.Should().Be(2);
     }
 
     [Fact]
@@ -180,6 +197,23 @@ public sealed class WeGameRecentMatchSourceTests
     private sealed class StubDiscovery : IWeGameSessionDiscovery
     {
         public WeGameConnection Discover() => new(12345, "fictional-token".ToCharArray());
+    }
+
+    private sealed class TrackingRecentMatchSource : IRecentMatchSource
+    {
+        private int running;
+        public int MaximumConcurrency { get; private set; }
+        public TaskCompletionSource TwoStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public async Task<IReadOnlyList<RecentMatch>> GetRankedMatchesAsync(PlayerIdentity player, int limit, CancellationToken cancellationToken)
+        {
+            var current = Interlocked.Increment(ref running);
+            MaximumConcurrency = Math.Max(MaximumConcurrency, current);
+            if (current == 2) TwoStarted.TrySetResult();
+            await Release.Task.WaitAsync(cancellationToken);
+            Interlocked.Decrement(ref running);
+            return [];
+        }
     }
 
     private sealed class StubTransport(params WeGameResponse[] responses) : IWeGameHttpTransport

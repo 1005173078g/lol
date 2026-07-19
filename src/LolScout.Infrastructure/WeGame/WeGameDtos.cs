@@ -17,7 +17,7 @@ public sealed class WeGameHttpTransport : IWeGameHttpTransport
     private readonly Func<TimeSpan, CancellationToken, Task> delay;
 
     public WeGameHttpTransport(ILeagueHttpTransport inner)
-        : this(inner, TimeSpan.FromSeconds(4), Task.Delay) { }
+        : this(inner, TimeSpan.FromSeconds(15), Task.Delay) { }
 
     public WeGameHttpTransport(ILeagueHttpTransport inner, TimeSpan timeout, Func<TimeSpan, CancellationToken, Task> delay)
     {
@@ -28,7 +28,7 @@ public sealed class WeGameHttpTransport : IWeGameHttpTransport
 
     public async Task<WeGameResponse> GetAsync(Uri uri, ReadOnlyMemory<char> token, CancellationToken cancellationToken)
     {
-        for (var attempt = 0; attempt < 2; attempt++)
+        for (var attempt = 0; attempt < 3; attempt++)
         {
             if (attempt > 0) await delay(TimeSpan.FromMilliseconds(250), cancellationToken);
             using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -42,11 +42,11 @@ public sealed class WeGameHttpTransport : IWeGameHttpTransport
             catch (HttpRequestException ex) when (ex.StatusCode is not null)
             {
                 var status = (int)ex.StatusCode.Value;
-                if (attempt == 0 && RetriableStatuses.Contains(status)) continue;
+                if (attempt < 2 && RetriableStatuses.Contains(status)) continue;
                 return new(status, "");
             }
-            catch (HttpRequestException) when (attempt == 0) { continue; }
-            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && attempt == 0) { continue; }
+            catch (HttpRequestException) when (attempt < 2) { continue; }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && attempt < 2) { continue; }
             catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested) { throw new TimeoutException("The local client request timed out.", ex); }
         }
         throw new InvalidOperationException("Retry loop completed unexpectedly.");

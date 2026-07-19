@@ -69,6 +69,20 @@ public sealed class LeagueSessionTests
     }
 
     [Fact]
+    public async Task Localized_skin_name_used_as_id_is_streamer_mode()
+    {
+        var json = (await Fixture()).Replace(
+            "\"championName\":\"Ahri\",\"riotIdGameName\":\"Enemy1\"",
+            "\"championName\":\"Ahri\",\"skinName\":\"九尾妖狐\",\"riotIdGameName\":\"九尾妖狐\"",
+            StringComparison.Ordinal);
+
+        var enemies = await Session(new StubTransport("\"Ally1#TEST\"", json), GamePhase.InGame)
+            .GetParticipantsAsync(default);
+
+        enemies[0].IsAnonymous.Should().BeTrue();
+    }
+
+    [Fact]
     public async Task Direct_champion_id_is_accepted_when_live_client_does_not_encode_a_skin()
     {
         var json = (await Fixture()).Replace(
@@ -80,6 +94,20 @@ public sealed class LeagueSessionTests
             .GetParticipantsAsync(default);
 
         enemies[0].ChampionId.Should().Be(103);
+    }
+
+    [Fact]
+    public async Task Zero_and_direct_skin_ids_work_without_a_production_champion_catalog()
+    {
+        var json = await Fixture();
+        json = json.Replace("\"championName\":\"Ahri\",\"riotIdGameName\":\"Enemy1\"", "\"championName\":\"Ahri\",\"skinID\":0,\"riotIdGameName\":\"Enemy1\"", StringComparison.Ordinal);
+        json = json.Replace("\"championName\":\"Aatrox\",\"riotIdGameName\":\"Enemy2\"", "\"championName\":\"Aatrox\",\"skinID\":266,\"riotIdGameName\":\"Enemy2\"", StringComparison.Ordinal);
+
+        var enemies = await Session(new StubTransport("\"Ally1#TEST\"", json), GamePhase.InGame, new DictionaryChampionCatalog(new Dictionary<string, int>()))
+            .GetParticipantsAsync(default);
+
+        enemies[0].ChampionId.Should().Be(0);
+        enemies[1].ChampionId.Should().Be(266);
     }
 
     [Theory]
@@ -94,7 +122,6 @@ public sealed class LeagueSessionTests
 
     [Theory]
     [InlineData(-1)]
-    [InlineData(999)]
     [InlineData(1000000)]
     public async Task Invalid_present_skin_id_is_protocol_change(int skinId)
     {
@@ -246,9 +273,9 @@ public sealed class LeagueSessionTests
         enemies.Should().HaveCount(5);
     }
 
-    private static LeagueSession Session(ILeagueHttpTransport transport, GamePhase phase = GamePhase.ChampionSelect) =>
+    private static LeagueSession Session(ILeagueHttpTransport transport, GamePhase phase = GamePhase.ChampionSelect, IChampionCatalog? champions = null) =>
         new(new LeagueClientDiscovery(new StubProcesses(new LeagueClientProcess("LeagueClientUx.exe", "LeagueClientUx.exe --app-port=54321 --remoting-auth-token=fictional"))), transport, "CN1", () => phase,
-            new DictionaryChampionCatalog(new Dictionary<string, int> { ["Annie"] = 1, ["Garen"] = 86, ["Ahri"] = 103, ["Aatrox"] = 266, ["Ashe"] = 22, ["LeeSin"] = 64 }));
+            champions ?? new DictionaryChampionCatalog(new Dictionary<string, int> { ["Annie"] = 1, ["Garen"] = 86, ["Ahri"] = 103, ["Aatrox"] = 266, ["Ashe"] = 22, ["LeeSin"] = 64 }));
 
     private static Task<string> Fixture() => File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "Fixtures", "league-participants.sanitized.json"));
     private sealed class StubProcesses(params LeagueClientProcess[] values) : IProcessCommandLineSource { public IReadOnlyList<LeagueClientProcess> GetProcesses() => values; }

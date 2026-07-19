@@ -25,7 +25,8 @@ public sealed class AppComposition : IDisposable
             new DictionaryChampionCatalog(new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)));
         ILeagueSession trackedLeague = new PhaseTrackingLeagueSession(league, phase => currentPhase = phase);
         var weGameDiscovery = new WeGameSessionDiscovery(discovery);
-        IRecentMatchSource history = new WeGameRecentMatchSource(weGameDiscovery, new WeGameHttpTransport(transport));
+        IRecentMatchSource history = new BoundedRecentMatchSource(
+            new WeGameRecentMatchSource(weGameDiscovery, new WeGameHttpTransport(transport)), 2);
         return new(new MatchScoutCoordinator(trackedLeague, history, new SystemClock()));
     }
 

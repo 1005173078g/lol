@@ -94,3 +94,15 @@ public sealed class WeGameRecentMatchSource(IWeGameSessionDiscovery discovery, I
         if (response.StatusCode is < 200 or > 299) throw new HttpRequestException("Local client request failed.", null, (System.Net.HttpStatusCode)response.StatusCode);
     }
 }
+
+public sealed class BoundedRecentMatchSource(IRecentMatchSource inner, int maximumConcurrency) : IRecentMatchSource
+{
+    private readonly SemaphoreSlim gate = new(maximumConcurrency > 0 ? maximumConcurrency : throw new ArgumentOutOfRangeException(nameof(maximumConcurrency)));
+
+    public async Task<IReadOnlyList<RecentMatch>> GetRankedMatchesAsync(PlayerIdentity player, int limit, CancellationToken cancellationToken)
+    {
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try { return await inner.GetRankedMatchesAsync(player, limit, cancellationToken).ConfigureAwait(false); }
+        finally { gate.Release(); }
+    }
+}

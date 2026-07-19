@@ -2,11 +2,12 @@ using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using LolScout.Core.Domain;
 using LolScout.Infrastructure.Diagnostics;
 using LolScout.Infrastructure.League;
 using LolScout.Infrastructure.WeGame;
 
-const string Usage = "Usage: LolScout.Probe league-phase | league-participants | wegame-history --current-player --region <region>";
+const string Usage = "Usage: LolScout.Probe league-phase | league-participants | league-live | wegame-history --current-player --region <region>";
 
 if (!TryParseCommand(args, out var command, out var error))
 {
@@ -18,6 +19,11 @@ if (!TryParseCommand(args, out var command, out var error))
 if (command == "wegame-history")
 {
     return await ProbeWeGameHistoryAsync();
+}
+
+if (command == "league-live")
+{
+    return await ProbeLeagueLiveAsync();
 }
 
 var session = TryDiscoverLeagueSession();
@@ -37,13 +43,38 @@ static bool TryParseCommand(string[] arguments, out string? command, out string 
 {
     command = arguments.FirstOrDefault();
     error = "invalid-command";
-    if (command is "league-phase" or "league-participants")
+    if (command is "league-phase" or "league-participants" or "league-live")
         return arguments.Length == 1;
 
     if (command != "wegame-history" || arguments.Length != 4 || arguments[1] != "--current-player" || arguments[2] != "--region" || string.IsNullOrWhiteSpace(arguments[3]))
         return false;
 
     return true;
+}
+
+static async Task<int> ProbeLeagueLiveAsync()
+{
+    try
+    {
+        var discovery = new LeagueClientDiscovery(new WindowsProcessCommandLineSource());
+        var session = new LeagueSession(discovery, new LeagueHttpTransport(), "联盟一区", () => GamePhase.InGame,
+            new DictionaryChampionCatalog(new Dictionary<string, int>()));
+        var players = await session.GetParticipantsAsync(default);
+        var history = new WeGameRecentMatchSource(new WeGameSessionDiscovery(discovery), new WeGameHttpTransport(new LeagueHttpTransport()));
+        var results = await Task.WhenAll(players.Select(async player =>
+        {
+            if (player.IsAnonymous) return false;
+            try { await history.GetRankedMatchesAsync(player.Player, 20, default); return true; }
+            catch { return false; }
+        }));
+        Console.WriteLine($"status=200 players={players.Count} anonymous={players.Count(x => x.IsAnonymous)} unknown-champion={players.Count(x => x.ChampionId == 0)} history-success={results.Count(x => x)} history-failed={results.Count(x => !x)}");
+        return 0;
+    }
+    catch (Exception exception)
+    {
+        Console.WriteLine($"status=unavailable type={exception.GetType().Name} message={exception.Message} inner={exception.InnerException?.GetType().Name}:{exception.InnerException?.Message}");
+        return 3;
+    }
 }
 
 static (Uri BaseAddress, string Password)? TryDiscoverLeagueSession()

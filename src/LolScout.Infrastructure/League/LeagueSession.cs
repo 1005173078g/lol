@@ -50,13 +50,12 @@ public sealed class LeagueSession(LeagueClientDiscovery discovery, ILeagueHttpTr
             if (p.SkinId is { } skinId)
             {
                 if (skinId >= 1000) id = skinId / 1000;
-                else if (skinId > 0 && champions.TryGetId(p.ChampionName!, out var catalogId) && catalogId == skinId) id = skinId;
-                else if (skinId == 0 && champions.TryGetId(p.ChampionName!, out catalogId)) id = catalogId;
+                else if (skinId >= 0) id = skinId;
                 else throw new ProtocolChangedException("skinID does not encode a valid champion id.");
-                if (id is <= 0 or > 999) throw new ProtocolChangedException("skinID does not encode a valid champion id.");
+                if (id is < 0 or > 999) throw new ProtocolChangedException("skinID does not encode a valid champion id.");
             }
             else if (!champions.TryGetId(p.ChampionName!, out id) || id <= 0)
-                throw new ProtocolChangedException("Champion name is not in the official catalog.");
+                id = 0;
             var anonymous = IsAnonymous(p);
             var identity = anonymous
                 ? new PlayerIdentity(p.ChampionName!, "主播模式", region)
@@ -74,7 +73,9 @@ public sealed class LeagueSession(LeagueClientDiscovery discovery, ILeagueHttpTr
     private static bool IsAnonymous(LiveClientPlayerDto player) =>
         string.IsNullOrWhiteSpace(player.RiotIdGameName)
         || string.IsNullOrWhiteSpace(player.RiotIdTagLine)
-        || string.Equals(player.RiotIdGameName, player.ChampionName, StringComparison.OrdinalIgnoreCase);
+        || string.Equals(player.RiotIdGameName, player.ChampionName, StringComparison.OrdinalIgnoreCase)
+        || (!string.IsNullOrWhiteSpace(player.SkinName)
+            && string.Equals(player.RiotIdGameName, player.SkinName, StringComparison.OrdinalIgnoreCase));
 }
 
 public sealed record LeagueRequestHandler(HttpMessageHandler Handler, Func<bool> PinRejected);
