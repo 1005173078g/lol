@@ -19,6 +19,7 @@ public interface IScoutStateSource
 public sealed class MatchScoutCoordinator : IScoutStateSource
 {
     private static readonly TimeSpan RefreshDebounce = TimeSpan.FromMilliseconds(10);
+    private static readonly TimeSpan FailedBatchRetryDelay = TimeSpan.FromSeconds(3);
     private readonly ILeagueSession session;
     private readonly IRecentMatchSource matches;
     private readonly IClock clock;
@@ -252,6 +253,7 @@ public sealed class MatchScoutCoordinator : IScoutStateSource
         try { await Task.WhenAll(tasks).ConfigureAwait(false); }
         catch (OperationCanceledException) when (batch.Token.IsCancellationRequested) { return; }
 
+        var shouldRetry = false;
         await stateGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
         try
         {
@@ -259,9 +261,29 @@ public sealed class MatchScoutCoordinator : IScoutStateSource
             {
                 currentPlayers = initial;
                 Publish(new(ScoutStatus.Complete, initial.ToArray(), clock.UtcNow));
+                shouldRetry = initial.Any(x => x.Error is not null && !x.Participant.IsAnonymous);
             }
         }
         finally { stateGate.Release(); }
+
+        if (shouldRetry) await RetryFailedBatchAsync(batch).ConfigureAwait(false);
+    }
+
+    private async Task RetryFailedBatchAsync(BatchContext failedBatch)
+    {
+        try { await clock.DelayAsync(FailedBatchRetryDelay, failedBatch.Token).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (failedBatch.Token.IsCancellationRequested) { return; }
+
+        BatchContext? retry = null;
+        await stateGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        try
+        {
+            if (IsCurrent(failedBatch.Generation, failedBatch.Token) && currentRoster is not null)
+                retry = CreateBatchInsideGate(currentRoster);
+        }
+        finally { stateGate.Release(); }
+
+        if (retry is not null) await RunBatchAsync(retry).ConfigureAwait(false);
     }
 
     private async Task ObservePlayerAsync(long batchGeneration, LiveParticipant participant, int index,

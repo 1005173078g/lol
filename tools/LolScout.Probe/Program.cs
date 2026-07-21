@@ -61,6 +61,71 @@ if (command == "wegame-alternatives")
             Console.WriteLine($"status={(exception.StatusCode is null ? "unavailable" : ((int)exception.StatusCode.Value).ToString())} route={candidate.Split('?')[0]}");
         }
     }
+    try
+    {
+        var aliasUri = new Uri($"https://127.0.0.1:{connection.Port}/lol-summoner/v1/alias/lookup?gameName={gameName}&tagLine={tagLine}");
+        var aliasJson = await transport.GetStringAsync(aliasUri, connection.Token, default);
+        using var aliasDocument = JsonDocument.Parse(aliasJson);
+        if (aliasDocument.RootElement.ValueKind == JsonValueKind.Object)
+            Console.WriteLine($"alias-fields={string.Join(',', aliasDocument.RootElement.EnumerateObject().Select(x => x.Name))}");
+        if (aliasDocument.RootElement.TryGetProperty("puuid", out var aliasPuuid) && aliasPuuid.ValueKind == JsonValueKind.String)
+        {
+            foreach (var conversionRoute in new[]
+            {
+                $"/lol-summoner/v1/summoners-by-puuid-cached/{Uri.EscapeDataString(aliasPuuid.GetString()!)}",
+                $"/lol-summoner/v2/summoners/puuid/{Uri.EscapeDataString(aliasPuuid.GetString()!)}"
+            })
+            {
+                try
+                {
+                    var conversionJson = await transport.GetStringAsync(new Uri($"https://127.0.0.1:{connection.Port}{conversionRoute}"), connection.Token, default);
+                    using var conversionDocument = JsonDocument.Parse(conversionJson);
+                    Console.WriteLine($"status=200 route={conversionRoute.Split(aliasPuuid.GetString()!)[0]} shape={JsonSerializer.Serialize(JsonShapeRedactor.Describe(conversionDocument.RootElement))}");
+                }
+                catch (HttpRequestException exception)
+                {
+                    Console.WriteLine($"status={(exception.StatusCode is null ? "unavailable" : ((int)exception.StatusCode.Value).ToString())} route=puuid-conversion");
+                }
+            }
+            try
+            {
+                var aliasHistoryUri = new Uri($"https://127.0.0.1:{connection.Port}/lol-match-history/v1/products/lol/{Uri.EscapeDataString(aliasPuuid.GetString()!)}/matches?begIndex=0&endIndex=19");
+                var aliasHistoryJson = await transport.GetStringAsync(aliasHistoryUri, connection.Token, default);
+                using var aliasHistoryDocument = JsonDocument.Parse(aliasHistoryJson);
+                Console.WriteLine($"status=200 history-identifier=alias-puuid shape={JsonSerializer.Serialize(JsonShapeRedactor.Describe(aliasHistoryDocument.RootElement))}");
+            }
+            catch (HttpRequestException exception)
+            {
+                Console.WriteLine($"status={(exception.StatusCode is null ? "unavailable" : ((int)exception.StatusCode.Value).ToString())} history-identifier=alias-puuid");
+            }
+        }
+
+        var lookupUri = new Uri($"https://127.0.0.1:{connection.Port}/lol-summoner/v1/summoners?name={fullName}");
+        var lookupJson = await transport.GetStringAsync(lookupUri, connection.Token, default);
+        using var lookupDocument = JsonDocument.Parse(lookupJson);
+        Console.WriteLine($"status=200 route=/lol-summoner/v1/summoners shape={JsonSerializer.Serialize(JsonShapeRedactor.Describe(lookupDocument.RootElement))}");
+        foreach (var field in new[] { "puuid", "accountId", "summonerId" })
+        {
+            if (!lookupDocument.RootElement.TryGetProperty(field, out var value)) continue;
+            var identifier = value.ValueKind == JsonValueKind.String ? value.GetString() : value.GetRawText();
+            if (string.IsNullOrWhiteSpace(identifier)) continue;
+            try
+            {
+                var historyUri = new Uri($"https://127.0.0.1:{connection.Port}/lol-match-history/v1/products/lol/{Uri.EscapeDataString(identifier)}/matches?begIndex=0&endIndex=19");
+                var historyJson = await transport.GetStringAsync(historyUri, connection.Token, default);
+                using var historyDocument = JsonDocument.Parse(historyJson);
+                Console.WriteLine($"status=200 history-identifier={field} shape={JsonSerializer.Serialize(JsonShapeRedactor.Describe(historyDocument.RootElement))}");
+            }
+            catch (HttpRequestException exception)
+            {
+                Console.WriteLine($"status={(exception.StatusCode is null ? "unavailable" : ((int)exception.StatusCode.Value).ToString())} history-identifier={field}");
+            }
+        }
+    }
+    catch (HttpRequestException exception)
+    {
+        Console.WriteLine($"status={(exception.StatusCode is null ? "unavailable" : ((int)exception.StatusCode.Value).ToString())} route=/lol-summoner/v1/summoners");
+    }
     return 0;
 }
 
@@ -92,7 +157,7 @@ if (command == "league-summoner-routes")
         using var document = JsonDocument.Parse(json);
         var routes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         CollectSummonerRoutes(document.RootElement, routes);
-        foreach (var route in routes.Order().Where(x => x is "GetLolSummonerV1AliasLookup" or "GetLolSummonerV1Summoners" or "GetLolSummonerV2Summoners" or "PostLolSummonerV2SummonersPuuid"))
+        foreach (var route in routes.Order().Where(x => x is "GetLolSummonerV1AliasLookup" or "GetLolSummonerV1Summoners" or "GetLolSummonerV2Summoners" or "PostLolSummonerV1Summoners" or "PostLolSummonerV2SummonersPuuid" or "LolSummonerSummonerRequestedName"))
         {
             Console.WriteLine(route);
             if (TryFindProperty(document.RootElement, route, out var definition)) Console.WriteLine(definition.GetRawText());

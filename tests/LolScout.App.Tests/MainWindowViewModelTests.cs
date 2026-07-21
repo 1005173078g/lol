@@ -3,6 +3,7 @@ using LolScout.App.Services;
 using LolScout.App.ViewModels;
 using LolScout.Core.Domain;
 using Xunit;
+using System.Runtime.InteropServices;
 
 namespace LolScout.App.Tests;
 
@@ -100,12 +101,44 @@ public sealed class MainWindowViewModelTests
     public async Task Clipboard_failure_is_observable_and_does_not_escape_command()
     {
         var viewModel = new MainWindowViewModel(null, new ThrowingClipboard(), new RecordingDispatcher());
+        await viewModel.ApplyStateAsync(new(ScoutStatus.Complete,
+            Players().Select(player => new PlayerScoutState(player, Analysis())).ToArray(), DateTimeOffset.UtcNow));
 
         var action = () => viewModel.CopyBroadcastCommand.ExecuteAsync(null);
 
         await action.Should().NotThrowAsync();
         viewModel.OperationStatus.Should().Be("复制失败，请重试");
         viewModel.LastCommandError.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task Copy_without_completed_results_reports_that_query_is_still_running()
+    {
+        var clipboard = new RecordingClipboard();
+        var viewModel = new MainWindowViewModel(null, clipboard, new RecordingDispatcher());
+
+        await viewModel.CopyBroadcastCommand.ExecuteAsync(null);
+
+        clipboard.Text.Should().BeNull();
+        viewModel.LastCommandError.Should().Be("暂无可复制结果");
+        viewModel.OperationStatus.Should().Be("战绩仍在查询，请稍后再复制");
+    }
+
+    [Fact]
+    public async Task Clipboard_service_retries_when_windows_clipboard_is_temporarily_busy()
+    {
+        var attempts = 0;
+        var delays = new List<TimeSpan>();
+        var clipboard = new ClipboardService(text =>
+        {
+            text.Should().Be("result");
+            if (Interlocked.Increment(ref attempts) < 3) throw new COMException("busy");
+        }, (delay, _) => { delays.Add(delay); return Task.CompletedTask; });
+
+        await clipboard.SetTextAsync("result");
+
+        attempts.Should().Be(3);
+        delays.Should().Equal(TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(100));
     }
 
     [Fact]

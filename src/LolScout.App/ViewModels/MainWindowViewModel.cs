@@ -133,6 +133,12 @@ public sealed partial class MainWindowViewModel : ObservableObject, IAsyncDispos
         {
             var completed = latestPlayers.Where(x => x.Analysis is not null)
                 .Select(x => (x.Participant, x.Analysis!)).ToArray();
+            if (completed.Length == 0)
+            {
+                LastCommandError = "暂无可复制结果";
+                OperationStatus = "战绩仍在查询，请稍后再复制";
+                return;
+            }
             var text = BroadcastFormatter.Format(completed, 180);
             await clipboard.SetTextAsync(text, lifetime.Token);
             LastCommandError = null;

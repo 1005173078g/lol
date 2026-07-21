@@ -253,6 +253,26 @@ public sealed class MatchScoutCoordinatorTests
     }
 
     [Fact]
+    public async Task Failed_automatic_batch_retries_same_roster_and_stops_after_success()
+    {
+        var source = new RetryOnceSource();
+        var clock = new FakeClock();
+        var sut = new MatchScoutCoordinator(new FixedRosterSession(Players()), source, clock);
+        using var stop = new CancellationTokenSource();
+        var states = Collect(sut.WatchAsync(stop.Token), stop.Token);
+
+        await WaitUntil(() => states.Count(x => x.Status == ScoutStatus.Complete) == 1);
+        states.Last(x => x.Status == ScoutStatus.Complete).Players.Should().OnlyContain(x => x.Error != null);
+
+        await clock.AdvanceAsync(TimeSpan.FromSeconds(3));
+        await WaitUntil(() => states.Count(x => x.Status == ScoutStatus.Complete) == 2);
+
+        source.Calls.Should().Be(10);
+        states.Last(x => x.Status == ScoutStatus.Complete).Players.Should().OnlyContain(x => x.Analysis != null);
+        stop.Cancel();
+    }
+
+    [Fact]
     public async Task Refresh_cancels_old_batch_and_late_old_results_cannot_overwrite_new_results()
     {
         var session = new FakeSession(GamePhase.Loading, GamePhase.InGame);
@@ -471,6 +491,19 @@ public sealed class MatchScoutCoordinatorTests
         private int calls; public bool CancelledOld; public TaskCompletionSource FirstBatchStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously); public TaskCompletionSource ReleaseOld { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public async Task<IReadOnlyList<RecentMatch>> GetRankedMatchesAsync(PlayerIdentity player, int limit, CancellationToken cancellationToken)
         { var call = Interlocked.Increment(ref calls); if (call <= 5) { if (call == 5) FirstBatchStarted.SetResult(); try { await ReleaseOld.Task.WaitAsync(cancellationToken); } catch (OperationCanceledException) { CancelledOld = true; throw; } return [new(true, false, "MID", 1, 1, 1, 1)]; } return [new(true, false, "MID", 1, 1, 1, 1), new(true, false, "MID", 1, 1, 1, 1)]; }
+    }
+    private sealed class RetryOnceSource : IRecentMatchSource
+    {
+        private int calls;
+        public int Calls => calls;
+        public Task<IReadOnlyList<RecentMatch>> GetRankedMatchesAsync(
+            PlayerIdentity player, int limit, CancellationToken cancellationToken)
+        {
+            var call = Interlocked.Increment(ref calls);
+            return call <= 5
+                ? Task.FromException<IReadOnlyList<RecentMatch>>(new HttpRequestException("not ready"))
+                : Task.FromResult<IReadOnlyList<RecentMatch>>([new(true, false, "MID", 1, 1, 1, 1)]);
+        }
     }
     private sealed class NeverCompletingSource : IRecentMatchSource
     {
