@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2270" PrivateAssets="all" />
+    <ProjectReference Include="..\LolScout.Core\LolScout.Core.csproj" />
+    <ProjectReference Include="..\LolScout.Infrastructure\LolScout.Infrastructure.csproj" />
+  </ItemGroup>
+  <ItemGroup><InternalsVisibleTo Include="LolScout.App.Tests" /></ItemGroup>
+</Project>

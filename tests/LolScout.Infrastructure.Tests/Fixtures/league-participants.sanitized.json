@@ -1,0 +1,12 @@
+[
+{"team":"ORDER","championName":"Annie","riotIdGameName":"Ally1","riotIdTagLine":"TEST","isBot":false,"isDead":false,"items":[],"level":1,"position":"MIDDLE","rawChampionName":"game_character_displayname_Annie","respawnTimer":0.0,"runes":{},"scores":{},"skinID":0,"summonerName":"Ally1#TEST","riotId":"Ally1#TEST","summonerSpells":{}},
+{"team":"ORDER","championName":"Garen","riotIdGameName":"Ally2","riotIdTagLine":"TEST"},
+{"team":"ORDER","championName":"Ashe","riotIdGameName":"Ally3","riotIdTagLine":"TEST"},
+{"team":"ORDER","championName":"Aatrox","riotIdGameName":"Ally4","riotIdTagLine":"TEST"},
+{"team":"ORDER","championName":"LeeSin","riotIdGameName":"Ally5","riotIdTagLine":"TEST"},
+{"team":"CHAOS","championName":"Ahri","riotIdGameName":"Enemy1","riotIdTagLine":"TEST"},
+{"team":"CHAOS","championName":"Aatrox","riotIdGameName":"Enemy2","riotIdTagLine":"TEST"},
+{"team":"CHAOS","championName":"Ashe","riotIdGameName":"Enemy3","riotIdTagLine":"TEST"},
+{"team":"CHAOS","championName":"Garen","riotIdGameName":"Enemy4","riotIdTagLine":"TEST"},
+{"team":"CHAOS","championName":"LeeSin","riotIdGameName":"Enemy5","riotIdTagLine":"TEST"}
+]

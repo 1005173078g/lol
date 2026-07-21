@@ -1,0 +1,12 @@
+.worktrees/
+.superpowers/
+artifacts/
+*.log
+*.dmp
+**/bin/
+**/obj/
+*.session
+*.session.json
+*.token
+*.ticket
+local-session.*

@@ -1,0 +1,36 @@
+{
+  "games": {
+    "games": [
+      {
+        "gameCreation": 1000,
+        "queueId": 420,
+        "participants": [
+          {
+            "championId": 103,
+            "stats": { "win": true, "kills": 8, "deaths": 2, "assists": 9 }
+          }
+        ]
+      },
+      {
+        "gameCreation": 2000,
+        "queueId": 440,
+        "participants": [
+          {
+            "championId": 64,
+            "stats": { "win": false, "kills": 3, "deaths": 5, "assists": 7 }
+          }
+        ]
+      },
+      {
+        "gameCreation": 3000,
+        "queueId": 400,
+        "participants": [
+          {
+            "championId": 1,
+            "stats": { "win": true, "kills": 1, "deaths": 1, "assists": 1 }
+          }
+        ]
+      }
+    ]
+  }
+}

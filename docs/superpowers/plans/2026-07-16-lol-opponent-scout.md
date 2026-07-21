@@ -17,6 +17,8 @@
 - MVP 率只使用 WeGame 明确返回的 MVP 标记；字段不存在时显示“不可用”。
 - 正常网络下大部分结果目标约 10 秒内出现，但不作硬实时保证。
 - 发布为 Windows x64 自包含单文件 `.exe`，用户无需安装 Python 或 .NET 运行时。
+- 程序要求以管理员身份运行，以读取 WeGame 管理员进程 LeagueClientUx 的自声明 LCU 连接参数。
+- LCU 与 Live Client Data API 必须固定验证 Riot `rclient` 证书的 SHA-256 指纹、主题、颁发者和有效期；禁止接受所有证书。
 
 ---
 
@@ -272,7 +274,9 @@ Commit: `git commit -am "feat: add redacted local protocol probe"`
 
 - [ ] **Step 2: 实现客户端发现与 HTTP 边界**
 
-只读取客户端自身声明的本地连接信息；请求仅发送到 `127.0.0.1`/`localhost`。认证材料保存在局部变量中，HTTP 日志禁用请求头和值记录。进程退出后清空会话对象。
+以管理员权限只读取 LeagueClientUx 命令行中自身声明的 `--app-port` 与 `--remoting-auth-token`；请求仅发送到 `127.0.0.1`。英雄选择阶段读取 LCU；载入/游戏阶段读取官方 `https://127.0.0.1:2999/liveclientdata/playerlist`。认证材料保存在局部变量中，HTTP 日志禁用请求头和值记录，进程退出后清空会话对象。
+
+TLS 回调必须同时核对 SHA-256 指纹、`CN=rclient`、包含 Riot Games 的颁发者和证书有效期。指纹不匹配时抛出 `CertificatePinMismatchException`；禁止用 `DangerousAcceptAnyServerCertificateValidator`。
 
 - [ ] **Step 3: 实现 DTO 解析和领域映射**
 
@@ -305,7 +309,7 @@ Commit: `git commit -am "feat: read league match participants"`
 
 - [ ] **Step 2: 实现会话发现和查询**
 
-只使用 Task 3 确认的本地会话入口。使用命名 `HttpClient`，总超时 4 秒；仅对连接失败、408、429、502、503、504 重试一次，延迟 250 毫秒；401/403 立即返回未登录/无权限错误。
+使用与 Task 4 相同的管理员 LCU 会话发现和证书固定验证。通过 `/lol-summoner/v1/summoners` 解析玩家 PUUID，再通过 `/lol-match-history/v1/products/lol/{puuid}/matches?begIndex=0&endIndex=19` 查询历史，并按需读取比赛详情。使用命名 `HttpClient`，总超时 4 秒；仅对连接失败、408、429、502、503、504 重试一次，延迟 250 毫秒；401/403 立即返回未登录/无权限错误。
 
 - [ ] **Step 3: 实现 DTO 映射**
 
