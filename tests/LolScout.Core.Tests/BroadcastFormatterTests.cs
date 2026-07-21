@@ -23,7 +23,7 @@ public sealed class BroadcastFormatterTests
 
         text.Should().Contain("英雄胜率67%(3场)");
         text.Should().Contain("总胜率55%(20场)");
-        text.Should().Contain("MVP20%");
+        text.Should().Contain("高KDA6场");
         text.Should().Contain("常用中路70%");
     }
 
@@ -40,14 +40,15 @@ public sealed class BroadcastFormatterTests
     }
 
     [Fact]
-    public void Format_marks_mvp_as_unavailable_when_the_source_flag_is_missing()
+    public void Format_includes_high_kda_match_count()
     {
         var item = AnalysisFor("甲");
-        var analysis = item.Analysis with { MvpRate = null };
+        var analysis = item.Analysis with { HighKdaMatchCount = 6 };
 
         var text = BroadcastFormatter.Format([(item.Participant, analysis)], 180);
 
-        text.Should().Contain("MVP不可用");
+        text.Should().Contain("高KDA6场");
+        text.Should().NotContain("MVP");
     }
 
     [Fact]
@@ -64,7 +65,7 @@ public sealed class BroadcastFormatterTests
 
         text.Should().Contain("英雄胜率67%(3场)");
         text.Should().Contain("总胜率55%(20场)");
-        text.Should().NotContain("MVP");
+        text.Should().NotContain("高KDA");
         text.Should().NotContain("常用");
         text.Length.Should().BeLessThanOrEqualTo(40);
     }
@@ -75,6 +76,6 @@ public sealed class BroadcastFormatterTests
     private static (LiveParticipant Participant, PlayerAnalysis Analysis) AnalysisFor(string name) =>
         (
             new LiveParticipant(new PlayerIdentity(name, "CN1", "联盟一区"), 200, 103, "阿狸"),
-            new PlayerAnalysis(20, 0.55, 0.20, "中路", 0.70, 3, 2d / 3d, 4.5)
+            new PlayerAnalysis(20, 0.55, 0.20, "中路", 0.70, 3, 2d / 3d, 4.5, 6)
         );
 }

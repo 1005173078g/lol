@@ -76,6 +76,7 @@ public sealed class MainWindowViewModelTests
         await viewModel.ApplyStateAsync(new(ScoutStatus.Querying, updated, DateTimeOffset.UtcNow));
 
         viewModel.Players[0].Status.Should().Be("已完成");
+        viewModel.Players[0].Mvp.Should().Be("高KDA 6/20（≥5.0）");
         viewModel.Players[1].Status.Should().Be("查询失败");
         viewModel.Players[2].Status.Should().Be("查询中");
         dispatcher.Invocations.Should().Be(2);
@@ -174,7 +175,7 @@ public sealed class MainWindowViewModelTests
         .Select(index => new LiveParticipant(new($"Enemy{index}", "TEST", "联盟一区"), 200, index, $"英雄{index}"))
         .ToArray();
 
-    private static PlayerAnalysis Analysis() => new(20, .55, .1, "中路", .6, 4, .5, 3.2);
+    private static PlayerAnalysis Analysis() => new(20, .55, .1, "中路", .6, 4, .5, 3.2, 6);
 
     private sealed class RecordingDispatcher : IUiDispatcher
     {

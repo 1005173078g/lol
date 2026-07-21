@@ -32,7 +32,7 @@ public sealed partial class PlayerCardViewModel : ObservableObject
         var analysis = state.Analysis;
         Status = "已完成";
         Overall = $"近 {analysis.MatchCount} 场胜率 {Percent(analysis.WinRate)}";
-        Mvp = analysis.MvpRate is null ? "MVP 不可用" : $"MVP {Percent(analysis.MvpRate.Value)}";
+        Mvp = $"高KDA {analysis.HighKdaMatchCount}/{analysis.MatchCount}（≥5.0）";
         Position = analysis.PrimaryPosition is null ? "常用位置不可用" : $"常用 {analysis.PrimaryPosition} {Percent(analysis.PrimaryPositionRate ?? 0)}";
         ChampionPerformance = analysis.ChampionMatchCount == 0
             ? "本局英雄近期无样本"

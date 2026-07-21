@@ -21,7 +21,7 @@ public static class BroadcastFormatter
         var fieldsByRemovalOrder = new Action<PlayerCard>[]
         {
             card => card.ShowPosition = false,
-            card => card.ShowMvp = false,
+            card => card.ShowHighKda = false,
             card => card.ShowOverallWinRate = false,
             card => card.ShowChampionWinRate = false
         };
@@ -71,7 +71,7 @@ public static class BroadcastFormatter
             Analysis = analysis;
             ShowChampionWinRate = analysis.ChampionMatchCount >= 3 && analysis.ChampionWinRate is not null;
             ShowOverallWinRate = analysis.MatchCount > 0;
-            ShowMvp = true;
+            ShowHighKda = true;
             ShowPosition = !string.IsNullOrWhiteSpace(analysis.PrimaryPosition);
         }
 
@@ -83,7 +83,7 @@ public static class BroadcastFormatter
 
         public bool ShowOverallWinRate { get; set; }
 
-        public bool ShowMvp { get; set; }
+        public bool ShowHighKda { get; set; }
 
         public bool ShowPosition { get; set; }
 
@@ -104,11 +104,9 @@ public static class BroadcastFormatter
                 fields.Add($"总胜率{Percentage(Analysis.WinRate)}({Analysis.MatchCount}场)");
             }
 
-            if (ShowMvp)
+            if (ShowHighKda)
             {
-                fields.Add(Analysis.MvpRate is null
-                    ? "MVP不可用"
-                    : $"MVP{Percentage(Analysis.MvpRate.Value)}");
+                fields.Add($"高KDA{Analysis.HighKdaMatchCount}场");
             }
 
             if (ShowPosition)
