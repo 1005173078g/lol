@@ -5,6 +5,7 @@ namespace LolScout.Core.Analysis;
 public static class PlayerAnalyzer
 {
     private const int MaximumMatchCount = 20;
+    private const double HighKdaThreshold = 5.0;
 
     public static PlayerAnalysis Analyze(IReadOnlyList<RecentMatch> matches, int championId)
     {
@@ -12,6 +13,8 @@ public static class PlayerAnalyzer
 
         var sample = matches.Take(MaximumMatchCount).ToArray();
         var matchCount = sample.Length;
+        var highKdaMatchCount = sample.Count(match =>
+            (double)(match.Kills + match.Assists) / Math.Max(1, match.Deaths) >= HighKdaThreshold);
         var primaryPosition = sample
             .Where(match => !string.IsNullOrWhiteSpace(match.Position))
             .GroupBy(match => match.Position)
@@ -34,6 +37,7 @@ public static class PlayerAnalyzer
             championMatches.Length == 0
                 ? null
                 : championMatches.Average(match =>
-                    (double)(match.Kills + match.Assists) / Math.Max(1, match.Deaths)));
+                    (double)(match.Kills + match.Assists) / Math.Max(1, match.Deaths)),
+            highKdaMatchCount);
     }
 }

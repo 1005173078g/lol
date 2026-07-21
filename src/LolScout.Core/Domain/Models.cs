@@ -53,4 +53,5 @@ public sealed record PlayerAnalysis(
     double? PrimaryPositionRate,
     int ChampionMatchCount,
     double? ChampionWinRate,
-    double? ChampionKda);
+    double? ChampionKda,
+    int HighKdaMatchCount = 0);

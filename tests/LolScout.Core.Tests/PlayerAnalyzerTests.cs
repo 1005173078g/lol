@@ -68,4 +68,19 @@ public sealed class PlayerAnalyzerTests
         result.ChampionWinRate.Should().BeNull();
         result.ChampionKda.Should().BeNull();
     }
+
+    [Fact]
+    public void Analyze_counts_kda_at_least_five_and_treats_zero_deaths_as_one()
+    {
+        RecentMatch[] matches =
+        [
+            new(true, null, "MID", 1, 6, 2, 4),
+            new(true, null, "MID", 1, 4, 1, 0),
+            new(true, null, "MID", 1, 2, 0, 3)
+        ];
+
+        var result = PlayerAnalyzer.Analyze(matches, 1);
+
+        result.HighKdaMatchCount.Should().Be(2);
+    }
 }
