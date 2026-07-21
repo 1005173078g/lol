@@ -43,6 +43,13 @@ text.Should().NotContain("仅供参考");
 text.Should().NotEndWith("|");
 ```
 
+Update the chat-limit test so it rejects the removed disclaimer:
+
+```csharp
+text.Length.Should().BeLessThanOrEqualTo(180);
+text.Should().NotContain("仅供参考");
+```
+
 Change the empty-input test to:
 
 ```csharp
@@ -54,15 +61,17 @@ public void Format_returns_empty_when_there_are_no_players()
 }
 ```
 
-Update the constrained-output expectations to reflect the reclaimed disclaimer space:
+Use a 38-character limit so the reclaimed disclaimer space does not prevent the removal path from being exercised:
 
 ```csharp
+var text = BroadcastFormatter.Format([AnalysisFor("甲")], 38);
+
 text.Should().Contain("英雄胜率67%(3场)");
 text.Should().Contain("总胜率55%");
 text.Should().Contain("高KDA6场");
 text.Should().NotContain("常用");
 text.Should().NotContain("仅供参考");
-text.Length.Should().BeLessThanOrEqualTo(40);
+text.Length.Should().BeLessThanOrEqualTo(38);
 ```
 
 - [ ] **Step 2: Run focused tests and verify RED**
@@ -156,4 +165,3 @@ git push -u origin feat/opponent-scout
 ```
 
 Expected: local `HEAD` equals `origin/feat/opponent-scout`, and the existing pull request contains the new commits.
-

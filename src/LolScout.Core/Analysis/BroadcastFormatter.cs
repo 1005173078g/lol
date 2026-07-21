@@ -4,15 +4,13 @@ namespace LolScout.Core.Analysis;
 
 public static class BroadcastFormatter
 {
-    private const string Disclaimer = "仅供参考";
-
     public static string Format(
         IReadOnlyList<(LiveParticipant Participant, PlayerAnalysis Analysis)> players,
         int maxLength)
     {
         ArgumentNullException.ThrowIfNull(players);
 
-        if (maxLength < Disclaimer.Length)
+        if (maxLength <= 0 || players.Count == 0)
         {
             return string.Empty;
         }
@@ -50,15 +48,8 @@ public static class BroadcastFormatter
         return string.Empty;
     }
 
-    private static string Render(IReadOnlyList<PlayerCard> cards)
-    {
-        if (cards.Count == 0)
-        {
-            return Disclaimer;
-        }
-
-        return $"{string.Join("；", cards.Select(card => card.Render()))} | {Disclaimer}";
-    }
+    private static string Render(IReadOnlyList<PlayerCard> cards) =>
+        string.Join("；", cards.Select(card => card.Render()));
 
     private static string Percentage(double value) =>
         $"{Math.Round(value * 100, MidpointRounding.AwayFromZero):0}%";
@@ -101,7 +92,7 @@ public static class BroadcastFormatter
 
             if (ShowOverallWinRate)
             {
-                fields.Add($"总胜率{Percentage(Analysis.WinRate)}({Analysis.MatchCount}场)");
+                fields.Add($"总胜率{Percentage(Analysis.WinRate)}");
             }
 
             if (ShowHighKda)

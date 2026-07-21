@@ -13,7 +13,7 @@ public sealed class BroadcastFormatterTests
         var text = BroadcastFormatter.Format(FiveAnalyses(), 180);
 
         text.Length.Should().BeLessThanOrEqualTo(180);
-        text.Should().Contain("仅供参考");
+        text.Should().NotContain("仅供参考");
     }
 
     [Fact]
@@ -22,9 +22,12 @@ public sealed class BroadcastFormatterTests
         var text = BroadcastFormatter.Format([AnalysisFor("甲")], 180);
 
         text.Should().Contain("英雄胜率67%(3场)");
-        text.Should().Contain("总胜率55%(20场)");
+        text.Should().Contain("总胜率55%");
+        text.Should().NotContain("总胜率55%(20场)");
         text.Should().Contain("高KDA6场");
         text.Should().Contain("常用中路70%");
+        text.Should().NotContain("仅供参考");
+        text.Should().NotEndWith("|");
     }
 
     [Fact]
@@ -52,22 +55,23 @@ public sealed class BroadcastFormatterTests
     }
 
     [Fact]
-    public void Format_returns_empty_instead_of_a_partial_disclaimer_when_limit_is_too_small()
+    public void Format_returns_empty_when_there_are_no_players()
     {
         BroadcastFormatter.Format([], 3).Should().BeEmpty();
-        BroadcastFormatter.Format([], 4).Should().Be("仅供参考");
+        BroadcastFormatter.Format([], 180).Should().BeEmpty();
     }
 
     [Fact]
     public void Format_removes_lower_priority_fields_first_when_constrained()
     {
-        var text = BroadcastFormatter.Format([AnalysisFor("甲")], 40);
+        var text = BroadcastFormatter.Format([AnalysisFor("甲")], 38);
 
         text.Should().Contain("英雄胜率67%(3场)");
-        text.Should().Contain("总胜率55%(20场)");
-        text.Should().NotContain("高KDA");
+        text.Should().Contain("总胜率55%");
+        text.Should().Contain("高KDA6场");
         text.Should().NotContain("常用");
-        text.Length.Should().BeLessThanOrEqualTo(40);
+        text.Should().NotContain("仅供参考");
+        text.Length.Should().BeLessThanOrEqualTo(38);
     }
 
     private static (LiveParticipant Participant, PlayerAnalysis Analysis)[] FiveAnalyses() =>
